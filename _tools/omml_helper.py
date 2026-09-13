@@ -180,6 +180,30 @@ def configure_document_normal_style(doc, size_pt=13):
             rPr.append(szCs)
         else:
             szCs.set(qn('w:val'), half_pts)
+
+        # 同步更新 styles.xml 的 w:docDefaults，徹底消除預設 theme 的 minorEastAsia (新細明體)
+        styles_elem = doc.styles.element
+        doc_defaults = styles_elem.find(qn('w:docDefaults'))
+        if doc_defaults is not None:
+            rPrDefault = doc_defaults.find(qn('w:rPrDefault'))
+            if rPrDefault is not None:
+                rPr_def = rPrDefault.find(qn('w:rPr'))
+                if rPr_def is not None:
+                    rFonts_def = rPr_def.find(qn('w:rFonts'))
+                    if rFonts_def is not None:
+                        for attr in ['asciiTheme', 'eastAsiaTheme', 'hAnsiTheme', 'cstheme']:
+                            if qn(f'w:{attr}') in rFonts_def.attrib:
+                                del rFonts_def.attrib[qn(f'w:{attr}')]
+                        rFonts_def.set(qn('w:eastAsia'), '標楷體')
+                        rFonts_def.set(qn('w:ascii'), 'Times New Roman')
+                        rFonts_def.set(qn('w:hAnsi'), 'Times New Roman')
+                        rFonts_def.set(qn('w:cs'), 'Times New Roman')
+                    sz_def = rPr_def.find(qn('w:sz'))
+                    if sz_def is not None:
+                        sz_def.set(qn('w:val'), half_pts)
+                    szCs_def = rPr_def.find(qn('w:szCs'))
+                    if szCs_def is not None:
+                        szCs_def.set(qn('w:val'), half_pts)
     except Exception:
         pass
 
@@ -204,6 +228,83 @@ def upgrade_to_modern_word_mode(doc):
     except Exception:
         pass
 
+def ensure_document_font_consistency(doc, default_font="標楷體", ascii_font="Times New Roman", size_pt=13):
+    """
+    全卷字型與字級一致性深度固化引擎：
+    1. 針對全文件 100% 的段落標記 (¶) 注入 <w:pPr><w:rPr>，顯式鎖定標楷體與 Times New Roman 13pt。
+       徹底消除 Word 在跨文件「全選剪下／複製貼上」時，因段落標記繼承目標文件樣式而自動退回「新細明體」的微軟預設陷阱！
+    2. 檢查全卷所有文字 Run，確保中文字型為標楷體、英數為 Times New Roman。
+    3. 遍歷包含一般段落與所有表格儲存格內的段落。
+    """
+    half_pts = str(int(round(size_pt * 2)))
+
+    def patch_paragraph(p):
+        pPr = p._p.get_or_add_pPr()
+        rPr = pPr.find(qn('w:rPr'))
+        if rPr is None:
+            rPr = parse_xml(
+                f'<w:rPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                f'<w:rFonts w:ascii="{ascii_font}" w:eastAsia="{default_font}" w:hAnsi="{ascii_font}" w:cs="{ascii_font}"/>'
+                f'<w:sz w:val="{half_pts}"/><w:szCs w:val="{half_pts}"/>'
+                f'</w:rPr>'
+            )
+            pPr.append(rPr)
+        else:
+            rFonts = rPr.find(qn('w:rFonts'))
+            if rFonts is None:
+                rFonts = parse_xml(
+                    f'<w:rFonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+                    f'w:ascii="{ascii_font}" w:eastAsia="{default_font}" w:hAnsi="{ascii_font}" w:cs="{ascii_font}"/>'
+                )
+                rPr.append(rFonts)
+            else:
+                rFonts.set(qn('w:eastAsia'), default_font)
+                if not rFonts.get(qn('w:ascii')):
+                    rFonts.set(qn('w:ascii'), ascii_font)
+                if not rFonts.get(qn('w:hAnsi')):
+                    rFonts.set(qn('w:hAnsi'), ascii_font)
+                if not rFonts.get(qn('w:cs')):
+                    rFonts.set(qn('w:cs'), ascii_font)
+            sz = rPr.find(qn('w:sz'))
+            if sz is None:
+                sz = parse_xml(f'<w:sz xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:val="{half_pts}"/>')
+                rPr.append(sz)
+            szCs = rPr.find(qn('w:szCs'))
+            if szCs is None:
+                szCs = parse_xml(f'<w:szCs xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:val="{half_pts}"/>')
+                rPr.append(szCs)
+
+        # 遍歷文字 Run
+        for r in p.runs:
+            if not r.text:
+                continue
+            run_rPr = r._r.get_or_add_rPr()
+            rf = run_rPr.find(qn('w:rFonts'))
+            if rf is None:
+                rf = parse_xml(
+                    f'<w:rFonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+                    f'w:ascii="{ascii_font}" w:eastAsia="{default_font}" w:hAnsi="{ascii_font}" w:cs="{ascii_font}"/>'
+                )
+                run_rPr.append(rf)
+            else:
+                if not rf.get(qn('w:eastAsia')) or rf.get(qn('w:eastAsia')) in ('新細明體', '細明體', 'SimSun', 'PMingLiU'):
+                    rf.set(qn('w:eastAsia'), default_font)
+                if not rf.get(qn('w:ascii')):
+                    rf.set(qn('w:ascii'), ascii_font)
+                if not rf.get(qn('w:hAnsi')):
+                    rf.set(qn('w:hAnsi'), ascii_font)
+
+    # 1. 處理主內文段落
+    for p in doc.paragraphs:
+        patch_paragraph(p)
+
+    # 2. 處理表格內段落
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    patch_paragraph(p)
+
 def sanitize_text(text: str) -> str:
     """自動修正微軟 Symbol 字型私用區 (PUA) 缺字亂碼，例如 \uf0de -> ⇒。"""
     if not text or not isinstance(text, str):
@@ -215,30 +316,22 @@ def sanitize_text(text: str) -> str:
     text = text.replace('\uf0db', '↔')
     return text
 
-# 複合數學結構正則表達式（僅包含這些結構的算式才需要生成重型 OMML 原生方程式）
+# 真正需要 2D 複合排版的結構（僅分數、根號、幾何線段橫槓、上下標與多行聯立才需要重型 OMML 原生方程式）
 COMPLEX_MATH_PATTERNS = [
     r'\\frac', r'\\dfrac', r'\\tfrac',   # 分數
     r'\\sqrt',                          # 根號
     r'\\overline', r'\\overleftrightarrow', r'\\overrightarrow', # 幾何線段、直線、射線
-    r'\\angle', r'\\triangle',          # 角度、三角形
-    r'\\sim', r'\\cong', r'\\perp', r'\\parallel', # 相似、全等、垂直、平行
-    r'\\pm', r'\\mp',                   # 正負號
-    r'\\times', r'\\div', r'\\cdot',    # 乘除符號
-    r'\\le', r'\\ge', r'\\neq', r'\\approx', r'\\equiv', # 不等式與約等於
-    r'\\sum', r'\\int', r'\\lim', r'\\infty', # 高階微積分/級數
-    r'\\pi', r'\\alpha', r'\\beta', r'\\theta', r'\\lambda', # 希臘字母
     r'\^',                              # 上標 / 次方 (如 x^2, 3^2, (x-3)^2)
     r'_',                               # 下標 (如 x_1, y_2, a_n)
-    r'\\{', r'\\}',                     # 集合括號
-    r'\\left', r'\\right',              # 自適應括號
     r'\\begin', r'\\end',               # 矩陣或多行聯立式
+    r'\\sum', r'\\int', r'\\lim',       # 高階微積分/級數
 ]
 COMPLEX_MATH_REGEX = re.compile('|'.join(COMPLEX_MATH_PATTERNS))
 
 def is_complex_math(latex_str: str) -> bool:
     """
-    判斷 LaTeX 內容是否包含需要由 OMML 方程式物件渲染的複合數學語法。
-    純數字、單一英文字母變數、簡單比較或坐標點回傳 False，轉為輕量級文字 run。
+    判斷 LaTeX 內容是否包含真正需要 2D 複合排版的結構。
+    純數字、單一變數、純文字、平面等式（含 ×, ÷, ±, ≤, ≥, ≠, ∠, △ 等）回傳 False，轉為輕量級文字 run。
     """
     if not latex_str or not isinstance(latex_str, str):
         return False
@@ -256,6 +349,17 @@ def add_simple_math_run(paragraph, text: str, default_font="標楷體", ascii_fo
     s = re.sub(r'\\text\{([^}]*)\}', r'\1', s)
     s = re.sub(r'\\rm\{([^}]*)\}', r'\1', s)
     s = s.replace(r'\degree', '°').replace(r'^\circ', '°')
+    s = s.replace(r'\times', '×').replace(r'\div', '÷')
+    s = s.replace(r'\pm', '±').replace(r'\mp', '∓')
+    s = s.replace(r'\le', '≤').replace(r'\ge', '≥')
+    s = s.replace(r'\neq', '≠').replace(r'\ne', '≠')
+    s = s.replace(r'\approx', '≈').replace(r'\equiv', '≡')
+    s = s.replace(r'\cdot', '·')
+    s = s.replace(r'\perp', '⊥').replace(r'\parallel', '∥')
+    s = s.replace(r'\sim', '∼').replace(r'\cong', '≅')
+    s = s.replace(r'\angle', '∠').replace(r'\triangle', '△')
+    s = s.replace(r'\in', '∈')
+    s = s.replace(r'\pi', 'π').replace(r'\alpha', 'α').replace(r'\beta', 'β').replace(r'\theta', 'θ').replace(r'\lambda', 'λ')
     
     parts = re.split(r'([a-zA-Z]+)', s)
     for part in parts:
