@@ -238,7 +238,7 @@ st.html(sync_js, unsafe_allow_javascript=True)
 # =======================================================
 st.markdown("""
 <div class="main-header">
-    <div class="badge">✦ 阿凱老師專屬神器 ✦</div>
+    <div class="badge">✦ 宜蘭縣中華國中阿凱老師製作 ✦</div>
     <h1>阿凱老師的數學考卷改題排版神器</h1>
     <p>一鍵上傳試卷（DOCX / PDF），全自動素養改題、程式化精確繪圖，產出學校大考最高規格雙版本 Word 檔！</p>
 </div>
