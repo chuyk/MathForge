@@ -11,6 +11,7 @@ import traceback
 import streamlit as st
 import docx
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 
 # 確保模組搜尋路徑包含當前目錄與 _tools
@@ -524,28 +525,35 @@ if uploaded_file is not None:
                     img_path = os.path.join(images_dir, f"{base_name}.png")
                     svg_path = os.path.join(images_dir, f"{base_name}.svg")
                     
-                    orig_savefig = plt.savefig
-                    def custom_savefig(fname, *args, **kwargs):
-                        orig_savefig(fname, *args, **kwargs)
-                        # 同步匯出高品質 SVG 向量圖
-                        kwargs_svg = kwargs.copy()
-                        kwargs_svg.pop('dpi', None)
-                        orig_savefig(svg_path, format='svg', *args, **kwargs_svg)
+                    orig_fig_savefig = Figure.savefig
+                    orig_plt_savefig = plt.savefig
+                    
+                    def custom_fig_savefig(self, fname, *args, **kwargs):
+                        res = orig_fig_savefig(self, fname, *args, **kwargs)
+                        try:
+                            kwargs_svg = kwargs.copy()
+                            kwargs_svg.pop('dpi', None)
+                            orig_fig_savefig(self, svg_path, format='svg', *args, **kwargs_svg)
+                        except Exception as svg_err:
+                            print(f"SVG generation warning for Q{q['num']}: {svg_err}")
+                        return res
                         
                     local_scope = {"save_path": img_path, "plt": plt, "np": np}
                     try:
-                        plt.savefig = custom_savefig
+                        Figure.savefig = custom_fig_savefig
+                        plt.savefig = lambda fname, *args, **kwargs: custom_fig_savefig(plt.gcf(), fname, *args, **kwargs)
                         exec(q["plot_code"], {}, local_scope)
                         # 防護：若代碼忘記調用 savefig，但目前有開啟之圖表
                         if plt.get_fignums():
                             if not os.path.exists(img_path):
-                                orig_savefig(img_path, dpi=300, bbox_inches='tight', pad_inches=0.15)
+                                orig_fig_savefig(plt.gcf(), img_path, dpi=300, bbox_inches='tight', pad_inches=0.15)
                             if not os.path.exists(svg_path):
-                                orig_savefig(svg_path, format='svg', bbox_inches='tight', pad_inches=0.15)
+                                orig_fig_savefig(plt.gcf(), svg_path, format='svg', bbox_inches='tight', pad_inches=0.15)
                     except Exception as plot_err:
                         print(f"Plotting error for Q{q['num']}: {plot_err}")
                     finally:
-                        plt.savefig = orig_savefig
+                        Figure.savefig = orig_fig_savefig
+                        plt.savefig = orig_plt_savefig
                         plt.close('all')
 
                     if os.path.exists(img_path):

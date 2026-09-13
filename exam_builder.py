@@ -87,7 +87,10 @@ def add_exam_image(paragraph, png_path, svg_path=None, width_inch=3.2):
             blips = inline_shape._inline.xpath('.//a:blip')
             if blips:
                 extLst_xml = f'''<a:extLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
-                    <a:ext uri="{{96DAC542-7E16-4309-A222-243384DC4E26}}">
+                    <a:ext uri="{{28A0092B-C50C-407E-A947-70E740481C1C}}">
+                        <a14:useLocalDpi xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main" val="0"/>
+                    </a:ext>
+                    <a:ext uri="{{96DAC541-7B7A-43D3-8B79-37D633B846F1}}">
                         <asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="{rId_svg}"/>
                     </a:ext>
                 </a:extLst>'''
