@@ -373,7 +373,7 @@ if uploaded_file is not None:
     
     if btn_start:
         if activation_code.strip() != "kai":
-            st.error("🔒 請先在左側欄輸入正確的「系統啟動碼」（kai）才能執行！")
+            st.error("🔒 請先在左側欄輸入正確的「系統啟動碼」才能執行！")
             st.stop()
 
         if not api_key:
@@ -435,7 +435,6 @@ if uploaded_file is not None:
             for m_idx, curr_model in enumerate(candidate_models):
                 progress_bar.progress(20 + int(30 * (m_idx / len(candidate_models))))
                 start_t = time.time()
-                timeout_flag = False
                 error_msg = ""
                 raw_text = ""
                 
@@ -448,28 +447,19 @@ if uploaded_file is not None:
                             break
                         except concurrent.futures.TimeoutError:
                             elapsed = int(time.time() - start_t)
-                            if elapsed >= 65:
-                                timeout_flag = True
-                                break
-                            status_text.info(f"【2/4】🤖 正由「{curr_model}」深入演算全卷試題與詳解...（已等待 {elapsed} 秒 / 最多 65 秒，整卷生成中請稍候）")
+                            status_text.info(f"【2/4】🤖 正由「{curr_model}」深入演算全卷試題與詳解...（已耗時 {elapsed} 秒，大考題目深度生成中，請耐心稍候）")
                         except Exception as req_err:
                             error_msg = str(req_err)
                             break
                 
-                if timeout_flag:
-                    next_name = candidate_models[m_idx + 1] if m_idx + 1 < len(candidate_models) else "無"
-                    st.warning(f"⏳ 模型 **{curr_model}** 超過 65 秒未回應，已自動切換至下一個模型：`{next_name}` 繼續演算...")
-                    time.sleep(1)
-                    continue
-                    
                 if error_msg:
                     # 辨識是否為 429 額度耗盡或速率限制
                     is_429 = ("429" in error_msg) or ("quota" in error_msg.lower()) or ("rate" in error_msg.lower())
                     next_name = candidate_models[m_idx + 1] if m_idx + 1 < len(candidate_models) else "無"
                     if is_429:
-                        st.warning(f"⚠️ 模型 **{curr_model}** 觸發 Google 免費額度上限 (429 Rate Limit)，正自動為您切換至 `{next_name}` 繼續！")
+                        st.warning(f"⚠️ 模型 **{curr_model}** 觸發 Google 免費額度上限 (429 Rate Limit)，正自動為您切換至 `{next_name}` 繼續嘗試！")
                     else:
-                        st.warning(f"⚠️ 模型 **{curr_model}** 調用未果（{error_msg[:60]}...），自動切換至 `{next_name}` 繼續...")
+                        st.warning(f"⚠️ 模型 **{curr_model}** 無法連線或呼叫異常（{error_msg[:80]}），自動切換至 `{next_name}` 繼續...")
                     time.sleep(1)
                     continue
                     
