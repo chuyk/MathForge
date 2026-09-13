@@ -9,6 +9,7 @@ import traceback
 import streamlit as st
 import docx
 import matplotlib.pyplot as plt
+import numpy as np
 
 # 確保模組搜尋路徑包含當前目錄與 _tools
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -502,7 +503,7 @@ if uploaded_file is not None:
                     progress_bar.progress(55 + int(20 * p_idx / len(plots_needed)))
                     img_name = f"Q{q['num']}_adapted.png"
                     img_path = os.path.join(images_dir, img_name)
-                    local_scope = {"save_path": img_path, "plt": plt}
+                    local_scope = {"save_path": img_path, "plt": plt, "np": np}
                     try:
                         exec(q["plot_code"], {}, local_scope)
                         plt.close('all')
