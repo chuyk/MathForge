@@ -201,6 +201,7 @@ with st.sidebar:
     st.caption("🔴 **詳解顏色**：深紅色 RGB(180, 0, 0)")
     st.caption("📐 **選項機制**：三層式無表格純段落智慧調配")
     st.caption("🔢 **方程式引擎**：Word 原生 OMML 可點選編輯公式")
+    st.caption("⚡ **效能防護**：智慧算式脫殼分流（Word 全選複製極速不卡死）")
 
 # 雙向同步至瀏覽器 localStorage（無 iframe 原生執行）
 sync_js = f"""
@@ -278,6 +279,8 @@ with col_info:
         <ul style="margin: 0; padding-left: 1.2rem; font-size: 0.93rem; color: #475569; line-height: 1.5;">
             <li><b>檔案 1：全卷試題與後附詳解(B4_13pt版)</b><br><small>題目在先，分頁後為簡答表與詳解</small></li>
             <li><b>檔案 2：逐題詳解教師備課卷(B4_13pt版)</b><br><small>題題對照，詳解文字與公式全紅字</small></li>
+            <li><b>全卷公式與文字統一 13pt</b><br><small>Word 原生 OMML 公式注入 13pt，杜絕公式縮小落差</small></li>
+            <li><b>現代 Office 模式（無相容模式）</b><br><small>原生解鎖向量圖形與現代方程式工具</small></li>
             <li><b>300 DPI 向量級精準附圖</b><br><small>坐標無壓線、雙箭頭標準標示</small></li>
         </ul>
     </div>

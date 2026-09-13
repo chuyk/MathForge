@@ -49,12 +49,13 @@ def _rgb_to_hex(rgb):
         return f"{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
     return None
 
-def latex_to_omml(latex_code: str, color=None):
+def latex_to_omml(latex_code: str, color=None, size_pt=13):
     r"""
     將 LaTeX 數學式字串轉為 Word 原生 OMML (<m:oMath>) XML 元素。
     
     :param latex_code: LaTeX 語法字串，例如 r'8\frac{3}{4}' 或 r'\overline{AB}'
     :param color: 可選顏色，支援 (r, g, b) 數組或 HEX 字串（例如 'B40000'）
+    :param size_pt: 方程式字級大小（點數），預設為大考標準 13pt（對應 OOXML sz=26）
     :return: docx.oxml.OxmlElement
     """
     transform = get_xslt_transform()
@@ -89,18 +90,34 @@ def latex_to_omml(latex_code: str, color=None):
                 if parent is not None:
                     parent.replace(acc, bar_el)
     
-    # 若有指定文字顏色（例如詳解紅色 B40000），為 OMML 內所有文字 run 加入顏色
+    # 計算半點數 (Half-points)：13pt -> 26
+    sz_val = str(int(size_pt * 2)) if size_pt else "26"
     hex_color = _rgb_to_hex(color)
-    if hex_color:
-        for r in omml_dom.xpath('.//m:r', namespaces=ns):
-            rPr = r.find('m:rPr', namespaces=ns)
-            if rPr is None:
-                rPr = ET.Element('{http://schemas.openxmlformats.org/officeDocument/2006/math}rPr')
-                r.insert(0, rPr)
-            color_el = rPr.find('w:color', namespaces=ns)
+
+    # 為 OMML 內所有文字 run (m:r) 加入 w:rPr 字級大小 (13pt) 與顏色設定
+    for r in omml_dom.xpath('.//m:r', namespaces=ns):
+        w_rPr = r.find('w:rPr', namespaces=ns)
+        if w_rPr is None:
+            w_rPr = ET.Element(f'{{{ns["w"]}}}rPr')
+            r.insert(0, w_rPr)
+            
+        # 設定方程式字級 w:sz 與 w:szCs (確保在 Word 中與內文 13pt 完美一致)
+        sz_el = w_rPr.find('w:sz', namespaces=ns)
+        if sz_el is None:
+            sz_el = ET.SubElement(w_rPr, f'{{{ns["w"]}}}sz')
+        sz_el.set(f'{{{ns["w"]}}}val', sz_val)
+
+        szCs_el = w_rPr.find('w:szCs', namespaces=ns)
+        if szCs_el is None:
+            szCs_el = ET.SubElement(w_rPr, f'{{{ns["w"]}}}szCs')
+        szCs_el.set(f'{{{ns["w"]}}}val', sz_val)
+        
+        # 若有指定文字顏色（例如詳解紅色 B40000），設定 w:color
+        if hex_color:
+            color_el = w_rPr.find('w:color', namespaces=ns)
             if color_el is None:
-                color_el = ET.SubElement(rPr, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color')
-            color_el.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', hex_color)
+                color_el = ET.SubElement(w_rPr, f'{{{ns["w"]}}}color')
+            color_el.set(f'{{{ns["w"]}}}val', hex_color)
 
     omml_xml_bytes = ET.tostring(omml_dom)
     return parse_xml(omml_xml_bytes)
@@ -111,11 +128,11 @@ def set_run_font(run, font_name="標楷體", ascii_font="Times New Roman", size_
     run.font.size = Pt(size_pt)
     run.font.bold = bold
     run.font.italic = italic
-    if superscript:
-        run.font.superscript = True
-    if color_rgb:
+    if isinstance(color_rgb, RGBColor):
+        run.font.color.rgb = color_rgb
+    elif isinstance(color_rgb, (tuple, list)):
         run.font.color.rgb = RGBColor(*color_rgb)
-        
+    
     rPr = run._element.get_or_add_rPr()
     rFonts = rPr.find(qn('w:rFonts'))
     if rFonts is None:
@@ -124,6 +141,68 @@ def set_run_font(run, font_name="標楷體", ascii_font="Times New Roman", size_
     rFonts.set(qn('w:eastAsia'), font_name)
     rFonts.set(qn('w:ascii'), ascii_font)
     rFonts.set(qn('w:hAnsi'), ascii_font)
+    rFonts.set(qn('w:cs'), ascii_font)
+
+def configure_document_normal_style(doc, size_pt=13):
+    """
+    將 Word 文件的「Normal (內文)」預設樣式字級設定為 13pt（半磅值 26），
+    並設定中文字型為標楷體、英數為 Times New Roman。
+    
+    【核心機制】：
+    Word 的方程式編輯器 (<m:oMath>) 的容器、架構字元（如分數線、根號、括號、底線等）
+    高度依賴文件 Normal 樣式的字級繼承。若 Normal 樣式未改為 13pt，Word 方程式編輯器
+    選取時仍會顯示 Normal 預設之 11pt。此函數從根本解決樣式層級字級繼承問題。
+    """
+    try:
+        style = doc.styles['Normal']
+        style.font.name = 'Times New Roman'
+        style.font.size = Pt(size_pt)
+        
+        rPr = style.element.get_or_add_rPr()
+        rFonts = rPr.get_or_add_rFonts()
+        rFonts.set(qn('w:eastAsia'), '標楷體')
+        rFonts.set(qn('w:ascii'), 'Times New Roman')
+        rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+        rFonts.set(qn('w:cs'), 'Times New Roman')
+        
+        half_pts = str(int(round(size_pt * 2)))
+        
+        sz = rPr.find(qn('w:sz'))
+        if sz is None:
+            sz = parse_xml(f'<w:sz xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:val="{half_pts}"/>')
+            rPr.append(sz)
+        else:
+            sz.set(qn('w:val'), half_pts)
+            
+        szCs = rPr.find(qn('w:szCs'))
+        if szCs is None:
+            szCs = parse_xml(f'<w:szCs xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:val="{half_pts}"/>')
+            rPr.append(szCs)
+        else:
+            szCs.set(qn('w:val'), half_pts)
+    except Exception:
+        pass
+
+def upgrade_to_modern_word_mode(doc):
+    """
+    將 Word 文件升級為最新現代模式（Word 2013/2016/2019/2021/365），徹底移除「相容模式」限制。
+    確保 Word 原生向量 SVG 圖形、OMML 數學公式與現代繪圖物件能以 100% 完整功能渲染，
+    並原生解鎖「圖形格式」與「轉換為圖形 (Convert to Shape)」可編輯功能。
+    """
+    try:
+        settings = doc.settings.element
+        compat_nodes = settings.xpath('.//w:compatSetting[@w:name="compatibilityMode"]')
+        if compat_nodes:
+            for node in compat_nodes:
+                node.set(qn('w:val'), '15')
+        else:
+            compat = settings.find(qn('w:compat'))
+            if compat is None:
+                compat = parse_xml('<w:compat xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>')
+                settings.append(compat)
+            compat.append(parse_xml('<w:compatSetting xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/>'))
+    except Exception:
+        pass
 
 def sanitize_text(text: str) -> str:
     """自動修正微軟 Symbol 字型私用區 (PUA) 缺字亂碼，例如 \uf0de -> ⇒。"""
@@ -135,6 +214,97 @@ def sanitize_text(text: str) -> str:
     text = text.replace('\uf0da', '→')
     text = text.replace('\uf0db', '↔')
     return text
+
+# 複合數學結構正則表達式（僅包含這些結構的算式才需要生成重型 OMML 原生方程式）
+COMPLEX_MATH_PATTERNS = [
+    r'\\frac', r'\\dfrac', r'\\tfrac',   # 分數
+    r'\\sqrt',                          # 根號
+    r'\\overline', r'\\overleftrightarrow', r'\\overrightarrow', # 幾何線段、直線、射線
+    r'\\angle', r'\\triangle',          # 角度、三角形
+    r'\\sim', r'\\cong', r'\\perp', r'\\parallel', # 相似、全等、垂直、平行
+    r'\\pm', r'\\mp',                   # 正負號
+    r'\\times', r'\\div', r'\\cdot',    # 乘除符號
+    r'\\le', r'\\ge', r'\\neq', r'\\approx', r'\\equiv', # 不等式與約等於
+    r'\\sum', r'\\int', r'\\lim', r'\\infty', # 高階微積分/級數
+    r'\\pi', r'\\alpha', r'\\beta', r'\\theta', r'\\lambda', # 希臘字母
+    r'\^',                              # 上標 / 次方 (如 x^2, 3^2, (x-3)^2)
+    r'_',                               # 下標 (如 x_1, y_2, a_n)
+    r'\\{', r'\\}',                     # 集合括號
+    r'\\left', r'\\right',              # 自適應括號
+    r'\\begin', r'\\end',               # 矩陣或多行聯立式
+]
+COMPLEX_MATH_REGEX = re.compile('|'.join(COMPLEX_MATH_PATTERNS))
+
+def is_complex_math(latex_str: str) -> bool:
+    """
+    判斷 LaTeX 內容是否包含需要由 OMML 方程式物件渲染的複合數學語法。
+    純數字、單一英文字母變數、簡單比較或坐標點回傳 False，轉為輕量級文字 run。
+    """
+    if not latex_str or not isinstance(latex_str, str):
+        return False
+    return bool(COMPLEX_MATH_REGEX.search(latex_str))
+
+def add_simple_math_run(paragraph, text: str, default_font="標楷體", ascii_font="Times New Roman", size_pt=13, bold=False, color_rgb=(0,0,0)):
+    """
+    將純數字、單一代數變數、簡易等式、坐標與選項代號脫殼為輕量級 Word Run。
+    - 英文字母變數（如 x, y, a, b, A, B）自動設為 Times New Roman 斜體 (Italic)
+    - 數字、逗號、括號、等號、正負號設為 Times New Roman 正體 (Upright)
+    - 徹底避免生成數百個 OMML 物件導致 Word 複製貼上單核 100% 卡死！
+    """
+    s = text.strip()
+    s = s.replace(r'\,', ' ').replace(r'\;', ' ').replace(r'\quad', '  ').replace(r'\qquad', '   ')
+    s = re.sub(r'\\text\{([^}]*)\}', r'\1', s)
+    s = re.sub(r'\\rm\{([^}]*)\}', r'\1', s)
+    s = s.replace(r'\degree', '°').replace(r'^\circ', '°')
+    
+    parts = re.split(r'([a-zA-Z]+)', s)
+    for part in parts:
+        if not part:
+            continue
+        is_alpha = part.isalpha()
+        r = paragraph.add_run(part)
+        set_run_font(
+            r,
+            font_name=default_font,
+            ascii_font=ascii_font,
+            size_pt=size_pt,
+            bold=bold,
+            italic=is_alpha,
+            color_rgb=color_rgb
+        )
+
+def optimize_math_markdown(text: str, enable_optimization: bool = True) -> tuple[str, int, int]:
+    """
+    文字層級智慧算式分流演算法：
+    1. 複合結構（分數、根號、幾何線段、上下標等）保留為 $...$。
+    2. 簡易純數值、單一字母、簡易等式脫殼為普通純文字。
+    """
+    if not enable_optimization or not text or "$" not in text:
+        return text, 0, text.count('$') // 2
+
+    simplified_count = 0
+    preserved_count = 0
+
+    def inline_replacer(match):
+        nonlocal simplified_count, preserved_count
+        content = match.group(1).strip()
+        if not content:
+            return ""
+        if is_complex_math(content):
+            preserved_count += 1
+            return f"${content}$"
+        
+        # 簡易算式脫殼
+        s = content
+        s = s.replace(r'\,', ' ').replace(r'\;', ' ').replace(r'\quad', '  ')
+        s = re.sub(r'\\text\{([^}]*)\}', r'\1', s)
+        s = re.sub(r'\\rm\{([^}]*)\}', r'\1', s)
+        s = s.replace(r'\degree', '°').replace(r'^\circ', '°')
+        simplified_count += 1
+        return s
+
+    processed_text = re.sub(r'(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)', inline_replacer, text)
+    return processed_text, simplified_count, preserved_count
 
 def add_item_to_paragraph(paragraph, item, default_font="標楷體", ascii_font="Times New Roman", default_size=13, force_color=None):
     """
@@ -148,15 +318,25 @@ def add_item_to_paragraph(paragraph, item, default_font="標楷體", ascii_font=
     # 情況 1: 字典指定數學式
     if isinstance(item, dict) and "math" in item:
         color = force_color or item.get("color", (0, 0, 0))
-        omml_elem = latex_to_omml(item["math"], color=color)
-        paragraph._p.append(omml_elem)
+        latex_str = item["math"]
+        size_val = item.get("size", default_size)
+        if is_complex_math(latex_str):
+            omml_elem = latex_to_omml(latex_str, color=color, size_pt=size_val)
+            paragraph._p.append(omml_elem)
+        else:
+            add_simple_math_run(paragraph, latex_str, default_font=default_font, ascii_font=ascii_font, size_pt=size_val, color_rgb=color)
         return
 
     # 情況 2: 元組格式 ("math", r"...") 或 ("$", r"...")
     if isinstance(item, (tuple, list)) and len(item) >= 2 and item[0] in ("math", "$"):
         color = force_color or (item[2] if len(item) > 2 else (0, 0, 0))
-        omml_elem = latex_to_omml(item[1], color=color)
-        paragraph._p.append(omml_elem)
+        latex_str = item[1]
+        size_val = item[3] if len(item) > 3 and item[3] is not None else default_size
+        if is_complex_math(latex_str):
+            omml_elem = latex_to_omml(latex_str, color=color, size_pt=size_val)
+            paragraph._p.append(omml_elem)
+        else:
+            add_simple_math_run(paragraph, latex_str, default_font=default_font, ascii_font=ascii_font, size_pt=size_val, color_rgb=color)
         return
 
     # 情況 3: 一般 run 元組
@@ -186,8 +366,11 @@ def add_item_to_paragraph(paragraph, item, default_font="標楷體", ascii_font=
                     continue
                 if token.startswith("$") and token.endswith("$") and len(token) >= 2:
                     latex_str = token[1:-1]
-                    omml_el = latex_to_omml(latex_str, color=color)
-                    paragraph._p.append(omml_el)
+                    if is_complex_math(latex_str):
+                        omml_el = latex_to_omml(latex_str, color=color, size_pt=size)
+                        paragraph._p.append(omml_el)
+                    else:
+                        add_simple_math_run(paragraph, latex_str, default_font=default_font, ascii_font=ascii_font, size_pt=size, bold=bold, color_rgb=color)
                 else:
                     r = paragraph.add_run(token)
                     set_run_font(r, font_name=default_font, ascii_font=ascii_font, size_pt=size, bold=bold, italic=italic, superscript=sup, color_rgb=color)
@@ -207,8 +390,11 @@ def add_item_to_paragraph(paragraph, item, default_font="標楷體", ascii_font=
                     continue
                 if token.startswith("$") and token.endswith("$") and len(token) >= 2:
                     latex_str = token[1:-1]
-                    omml_el = latex_to_omml(latex_str, color=color)
-                    paragraph._p.append(omml_el)
+                    if is_complex_math(latex_str):
+                        omml_el = latex_to_omml(latex_str, color=color, size_pt=default_size)
+                        paragraph._p.append(omml_el)
+                    else:
+                        add_simple_math_run(paragraph, latex_str, default_font=default_font, ascii_font=ascii_font, size_pt=default_size, color_rgb=color)
                 else:
                     r = paragraph.add_run(token)
                     set_run_font(r, font_name=default_font, ascii_font=ascii_font, size_pt=default_size, color_rgb=color)

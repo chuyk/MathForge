@@ -12,9 +12,9 @@ from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
 # 匯入 OMML 核心模組
 try:
-    from _tools.omml_helper import add_exam_runs, set_run_font, sanitize_text
+    from _tools.omml_helper import add_exam_runs, set_run_font, sanitize_text, configure_document_normal_style
 except ImportError:
-    from omml_helper import add_exam_runs, set_run_font, sanitize_text
+    from omml_helper import add_exam_runs, set_run_font, sanitize_text, configure_document_normal_style
 
 # 規範色彩常數
 COLOR_BLACK = RGBColor(0, 0, 0)
@@ -168,6 +168,7 @@ def render_options(doc, options, options_type="text"):
 def build_student_exam(questions_data, title, subtitle, out_path):
     """產出檔案 1：全卷試題與後附詳解(B4_13pt版).docx"""
     doc = Document()
+    configure_document_normal_style(doc, size_pt=13)
     upgrade_to_modern_word_mode(doc)
     configure_b4_section(doc.sections[0])
 
@@ -256,6 +257,7 @@ def build_student_exam(questions_data, title, subtitle, out_path):
 def build_teacher_exam(questions_data, title, subtitle, out_path):
     """產出檔案 2：逐題詳解教師備課卷(B4_13pt版).docx"""
     doc = Document()
+    configure_document_normal_style(doc, size_pt=13)
     upgrade_to_modern_word_mode(doc)
     configure_b4_section(doc.sections[0])
 
