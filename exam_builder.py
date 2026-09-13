@@ -5,6 +5,9 @@ from docx import Document
 from docx.shared import Pt, Inches, Mm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.oxml import parse_xml
+from docx.parts.image import ImagePart
+from docx.opc.packuri import PackURI
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
 # 匯入 OMML 核心模組
 try:
@@ -46,6 +49,53 @@ def add_clean_paragraph(doc, space_before=0, space_after=2, line_spacing=1.15, k
     p.paragraph_format.line_spacing = line_spacing
     p.paragraph_format.keep_with_next = keep_with_next
     return p
+
+def add_exam_image(paragraph, png_path, svg_path=None, width_inch=3.2):
+    """
+    在段落中加入試題附圖。
+    若提供 svg_path 且存在，則以微軟 OOXML 標準嵌入 SVG 向量圖，並以 png_path 作為向下相容 fallback。
+    老師在 Word 中點選圖片後，可點選「圖形格式」->「轉換為圖形 (Convert to Shape)」拆解為原生向量形狀與文字進行編輯！
+    """
+    run = paragraph.add_run()
+    inline_shape = run.add_picture(png_path, width=Inches(width_inch))
+    
+    if svg_path and os.path.exists(svg_path):
+        try:
+            with open(svg_path, 'rb') as f:
+                svg_bytes = f.read()
+            
+            doc_part = paragraph.part
+            package = doc_part.package
+            
+            # 檢查 package 中是否已存在相同 SVG part，避免重複打包膨脹
+            existing_part = None
+            for p in package.parts:
+                if str(p.partname).endswith('.svg') and getattr(p, 'blob', None) == svg_bytes:
+                    existing_part = p
+                    break
+            
+            if existing_part is not None:
+                svg_part = existing_part
+            else:
+                svg_count = sum(1 for p in package.parts if str(p.partname).endswith('.svg'))
+                partname = PackURI(f'/word/media/diagram_{svg_count + 1}.svg')
+                svg_part = ImagePart(partname, 'image/svg+xml', svg_bytes)
+                package.parts.append(svg_part)
+            
+            rId_svg = doc_part.relate_to(svg_part, RT.IMAGE)
+            
+            blips = inline_shape._inline.xpath('.//a:blip')
+            if blips:
+                extLst_xml = f'''<a:extLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                    <a:ext uri="{{96DAC542-7E16-4309-A222-243384DC4E26}}">
+                        <asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="{rId_svg}"/>
+                    </a:ext>
+                </a:extLst>'''
+                blips[0].append(parse_xml(extLst_xml))
+        except Exception as e:
+            # 若 SVG 附加發生異常，維持標準 PNG 正常顯示，不影響試卷產出
+            pass
+    return inline_shape
 
 def render_options(doc, options, options_type="text"):
     """
@@ -126,7 +176,7 @@ def build_student_exam(questions_data, title, subtitle, out_path):
             p_img.paragraph_format.space_before = Pt(2)
             p_img.paragraph_format.space_after = Pt(4)
             p_img.paragraph_format.keep_with_next = True
-            p_img.add_run().add_picture(q["image_path"], width=Inches(q.get("img_width_inch", 3.2)))
+            add_exam_image(p_img, q["image_path"], q.get("svg_path"), width_inch=q.get("img_width_inch", 3.2))
 
         render_options(doc, q["options"], q.get("options_type", "text"))
 
@@ -179,7 +229,7 @@ def build_student_exam(questions_data, title, subtitle, out_path):
             p_img.paragraph_format.left_indent = Inches(0.4)
             p_img.paragraph_format.space_before = Pt(2)
             p_img.paragraph_format.space_after = Pt(4)
-            p_img.add_run().add_picture(q["sol_image_path"], width=Inches(q.get("sol_img_width_inch", 3.2)))
+            add_exam_image(p_img, q["sol_image_path"], q.get("sol_svg_path"), width_inch=q.get("sol_img_width_inch", 3.2))
 
     doc.save(out_path)
     return out_path
@@ -212,7 +262,7 @@ def build_teacher_exam(questions_data, title, subtitle, out_path):
             p_img.paragraph_format.space_before = Pt(2)
             p_img.paragraph_format.space_after = Pt(4)
             p_img.paragraph_format.keep_with_next = True
-            p_img.add_run().add_picture(q["image_path"], width=Inches(q.get("img_width_inch", 3.2)))
+            add_exam_image(p_img, q["image_path"], q.get("svg_path"), width_inch=q.get("img_width_inch", 3.2))
 
         # 選項 (黑字)
         render_options(doc, q["options"], q.get("options_type", "text"))
@@ -227,7 +277,7 @@ def build_teacher_exam(questions_data, title, subtitle, out_path):
             p_img.paragraph_format.left_indent = Inches(0.4)
             p_img.paragraph_format.space_before = Pt(2)
             p_img.paragraph_format.space_after = Pt(4)
-            p_img.add_run().add_picture(q["sol_image_path"], width=Inches(q.get("sol_img_width_inch", 3.2)))
+            add_exam_image(p_img, q["sol_image_path"], q.get("sol_svg_path"), width_inch=q.get("sol_img_width_inch", 3.2))
 
         # 題目間分隔線
         if idx < len(questions_data) - 1:

@@ -3,6 +3,8 @@ import sys
 import json
 import re
 import time
+import io
+import zipfile
 import concurrent.futures
 import tempfile
 import traceback
@@ -175,6 +177,20 @@ with st.sidebar:
         index=0,
         help="Google 官方最新前瞻推理模型，預設推薦使用速度與推理兼備的 gemini-3.8-flash。"
     )
+    
+    st.divider()
+
+    st.markdown("#### 🎨 試卷附圖格式")
+    img_format_choice = st.radio(
+        "選擇附圖嵌入規格",
+        options=[
+            "SVG 向量圖 (在 Word 點「轉換為圖形」可自由改字與線條)",
+            "PNG 高解析圖 (300 DPI 印刷點陣圖，穩定度高)"
+        ],
+        index=0,
+        help="• SVG 向量圖：微軟 Office 官方標準向量格式。在 Word 中點選圖片後，可於工具列點選「轉換為圖形 (Convert to Shape)」，即可將圖形拆解成獨立文字與線條，自由修改頂點英文字母與線段！\n• PNG：傳統 300 DPI 點陣圖。"
+    )
+    use_svg = "SVG" in img_format_choice
     
     st.divider()
     
@@ -497,21 +513,53 @@ if uploaded_file is not None:
             os.makedirs(images_dir, exist_ok=True)
             
             plots_needed = [q for q in questions if q.get("needs_plot") and q.get("plot_code")]
+            svg_files_dict = {}
             if plots_needed:
                 for p_idx, q in enumerate(plots_needed, 1):
-                    status_text.info(f"【3/4】📐 正在使用 Python Matplotlib 繪製第 {q['num']} 題 300 DPI 高解析附圖 ({p_idx}/{len(plots_needed)})...")
+                    mode_label = "SVG 向量圖 (含 300 DPI 備用圖)" if use_svg else "300 DPI 印刷高解析圖"
+                    status_text.info(f"【3/4】📐 正在使用 Python Matplotlib 繪製第 {q['num']} 題 {mode_label} ({p_idx}/{len(plots_needed)})...")
                     progress_bar.progress(55 + int(20 * p_idx / len(plots_needed)))
-                    img_name = f"Q{q['num']}_adapted.png"
-                    img_path = os.path.join(images_dir, img_name)
+                    
+                    base_name = f"Q{q['num']}_adapted"
+                    img_path = os.path.join(images_dir, f"{base_name}.png")
+                    svg_path = os.path.join(images_dir, f"{base_name}.svg")
+                    
+                    orig_savefig = plt.savefig
+                    def custom_savefig(fname, *args, **kwargs):
+                        orig_savefig(fname, *args, **kwargs)
+                        # 同步匯出高品質 SVG 向量圖
+                        kwargs_svg = kwargs.copy()
+                        kwargs_svg.pop('dpi', None)
+                        orig_savefig(svg_path, format='svg', *args, **kwargs_svg)
+                        
                     local_scope = {"save_path": img_path, "plt": plt, "np": np}
                     try:
+                        plt.savefig = custom_savefig
                         exec(q["plot_code"], {}, local_scope)
-                        plt.close('all')
-                        if os.path.exists(img_path):
-                            q["image_path"] = img_path
-                            q["img_width_inch"] = 3.2
+                        # 防護：若代碼忘記調用 savefig，但目前有開啟之圖表
+                        if plt.get_fignums():
+                            if not os.path.exists(img_path):
+                                orig_savefig(img_path, dpi=300, bbox_inches='tight', pad_inches=0.15)
+                            if not os.path.exists(svg_path):
+                                orig_savefig(svg_path, format='svg', bbox_inches='tight', pad_inches=0.15)
                     except Exception as plot_err:
                         print(f"Plotting error for Q{q['num']}: {plot_err}")
+                    finally:
+                        plt.savefig = orig_savefig
+                        plt.close('all')
+
+                    if os.path.exists(img_path):
+                        q["image_path"] = img_path
+                        q["img_width_inch"] = 3.2
+                    if os.path.exists(svg_path):
+                        with open(svg_path, "rb") as f_svg:
+                            svg_bytes = f_svg.read()
+                        q["svg_bytes"] = svg_bytes
+                        svg_files_dict[f"第{q['num']}題_附圖.svg"] = svg_bytes
+                        if use_svg:
+                            q["svg_path"] = svg_path
+                        else:
+                            q["svg_path"] = None
             else:
                 status_text.info("【3/4】📐 本卷題目無須額外繪圖，直接進入排版階段...")
                 progress_bar.progress(75)
@@ -541,12 +589,25 @@ if uploaded_file is not None:
             with open(path2, "rb") as f2:
                 f2_bytes = f2.read()
                 
+            svg_zip_bytes = None
+            svg_zip_name = None
+            if svg_files_dict:
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for s_fname, s_data in svg_files_dict.items():
+                        zf.writestr(s_fname, s_data)
+                svg_zip_bytes = zip_buffer.getvalue()
+                svg_zip_name = f"{unit_title}_全卷附圖SVG向量包.zip"
+
             st.session_state["download_data"] = {
                 "file1_name": file1_name,
                 "file1_bytes": f1_bytes,
                 "file2_name": file2_name,
                 "file2_bytes": f2_bytes,
+                "svg_zip_name": svg_zip_name,
+                "svg_zip_bytes": svg_zip_bytes,
                 "questions": questions,
+                "use_svg": use_svg,
             }
             
         except Exception as e:
@@ -590,6 +651,23 @@ if "download_data" in st.session_state:
             type="primary",
             use_container_width=True
         )
+        
+    if data_dict.get("svg_zip_bytes"):
+        st.download_button(
+            label="📦 下載：全卷題目附圖 SVG 向量圖包 (.zip)",
+            data=data_dict["svg_zip_bytes"],
+            file_name=data_dict["svg_zip_name"],
+            mime="application/zip",
+            help="包含本份試卷所有幾何附圖的獨立 SVG 原始向量檔案，可用 Inkscape、Illustrator 或 PowerPoint 自由編輯！",
+            use_container_width=True
+        )
+        
+    if data_dict.get("use_svg"):
+        st.info("💡 **小撇步：如何在 Word 中直接修改幾何附圖？**\n\n"
+                "1. 在 Word 中滑鼠點選題目附圖，上方功能區會出現 **【圖形格式 (Graphics Format)】**。\n"
+                "2. 點選 **【轉換為圖形 (Convert to Shape)】**（或在圖上按右鍵點選此選項）。\n"
+                "3. 整張圖形立即解構為微軟原生向量圖形與文字！\n"
+                "4. 您可以任意點選頂點字母（如 A, B, C）直接改字、拖移坐標位置、或調整線條粗細與色彩！")
     
     # 預覽產生之試題
     st.markdown("### 🔍 改題成果即時預覽 (Preview)")
@@ -605,3 +683,11 @@ if "download_data" in st.session_state:
                 st.markdown(f"> {step}")
             if q.get("image_path") and os.path.exists(q["image_path"]):
                 st.image(q["image_path"], caption=f"第 {q['num']} 題附圖", width=350)
+                if q.get("svg_bytes"):
+                    st.download_button(
+                        label=f"📥 下載第 {q['num']} 題 SVG 向量檔",
+                        data=q["svg_bytes"],
+                        file_name=f"第{q['num']}題_附圖.svg",
+                        mime="image/svg+xml",
+                        key=f"dl_svg_{q['num']}"
+                    )
