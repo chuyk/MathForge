@@ -332,31 +332,8 @@ def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str,
         
         client = genai.Client(api_key=api_key)
         
-        # 1. 嘗試 Interactions API（遵循 Google 官方文件，傳入 response_format）
+        # 1. 優先調用 models.generate_content (官方生產標準模式，速度最快、穩定度最高)
         try:
-            interaction = client.interactions.create(
-                model=model_name,
-                input=full_prompt,
-                response_format={
-                    "type": "text",
-                    "mime_type": "application/json"
-                }
-            )
-            if hasattr(interaction, "output_text") and interaction.output_text:
-                resp_text = interaction.output_text
-            elif hasattr(interaction, "outputs") and interaction.outputs:
-                extracted = []
-                for out in interaction.outputs:
-                    if hasattr(out, "text") and out.text:
-                        extracted.append(out.text)
-                    elif hasattr(out, "content") and out.content:
-                        extracted.append(str(out.content))
-                resp_text = "\n".join(extracted)
-        except Exception:
-            pass
-
-        # 2. 嘗試 models.generate_content (官方 GenerateContentConfig 模式)
-        if not resp_text:
             response = client.models.generate_content(
                 model=model_name,
                 contents=user_prompt,
@@ -365,7 +342,34 @@ def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str,
                     response_mime_type="application/json"
                 )
             )
-            resp_text = response.text.strip()
+            if response.text:
+                resp_text = response.text.strip()
+        except Exception:
+            pass
+
+        # 2. 次要嘗試 Interactions API
+        if not resp_text:
+            try:
+                interaction = client.interactions.create(
+                    model=model_name,
+                    input=full_prompt,
+                    response_format={
+                        "type": "text",
+                        "mime_type": "application/json"
+                    }
+                )
+                if hasattr(interaction, "output_text") and interaction.output_text:
+                    resp_text = interaction.output_text
+                elif hasattr(interaction, "outputs") and interaction.outputs:
+                    extracted = []
+                    for out in interaction.outputs:
+                        if hasattr(out, "text") and out.text:
+                            extracted.append(out.text)
+                        elif hasattr(out, "content") and out.content:
+                            extracted.append(str(out.content))
+                    resp_text = "\n".join(extracted)
+            except Exception:
+                pass
             
     except Exception:
         # 3. 兼容 legacy google.generativeai
