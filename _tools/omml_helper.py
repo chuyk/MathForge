@@ -306,14 +306,39 @@ def ensure_document_font_consistency(doc, default_font="標楷體", ascii_font="
                     patch_paragraph(p)
 
 def sanitize_text(text: str) -> str:
-    """自動修正微軟 Symbol 字型私用區 (PUA) 缺字亂碼，例如 \uf0de -> ⇒。"""
+    """自動修正微軟 Symbol 字型私用區 (PUA) 缺字亂碼，未渲染之 LaTeX 符號（\\Rightarrow, \\dots）與負號。"""
     if not text or not isinstance(text, str):
         return text
+    # Symbol PUA 缺字修正
     text = text.replace('\uf0de', '⇒')
     text = text.replace('\uf0e0', '⇒')
     text = text.replace('\uf0d8', '←')
     text = text.replace('\uf0da', '→')
     text = text.replace('\uf0db', '↔')
+
+    # 未渲染之 LaTeX 箭頭與推導符號
+    text = text.replace(r'\Rightarrow', '⇒')
+    text = text.replace(r'\rightarrow', '→')
+    text = text.replace(r'\to', '→')
+    text = text.replace(r'\Leftarrow', '⇐')
+    text = text.replace(r'\leftarrow', '←')
+    text = text.replace(r'\Leftrightarrow', '⇔')
+    text = text.replace(r'\leftrightarrow', '↔')
+
+    # 省略號
+    text = text.replace(r'\dots', '…')
+    text = text.replace(r'\cdots', '…')
+    text = text.replace(r'\ldots', '…')
+
+    # 集合花括號轉義修復
+    text = text.replace(r'\{', '{').replace(r'\}', '}')
+
+    # 負數負號修正：將前置為括號、等號、逗號、冒號或空格之 ASCII 連字號 - 轉為國際標準數學負號 − (U+2212)
+    # 例如 (-3, 23) -> (−3, 23)，x = -80 -> x = −80
+    text = re.sub(r'(?<=[(（=＝,，:：\s])-(\d+)', '−\\1', text)
+    text = re.sub(r'(?<=^)-(\d+)', '−\\1', text)
+    text = re.sub(r'(?<=\n)-(\d+)', '−\\1', text)
+
     return text
 
 # 真正需要 2D 複合排版的結構（僅分數、根號、幾何線段橫槓、上下標與多行聯立才需要重型 OMML 原生方程式）
@@ -342,6 +367,8 @@ def add_simple_math_run(paragraph, text: str, default_font="標楷體", ascii_fo
     將純數字、單一代數變數、簡易等式、坐標與選項代號脫殼為輕量級 Word Run。
     - 英文字母變數（如 x, y, a, b, A, B）自動設為 Times New Roman 斜體 (Italic)
     - 數字、逗號、括號、等號、正負號設為 Times New Roman 正體 (Upright)
+    - 負號一律自動轉為國際標準數學負號 − (U+2212)，長度與加號 + 完美一致，徹底消除短連字號瑕疵
+    - 自動渲染 \\Rightarrow (⇒), \\rightarrow (→), \\dots (…), \\{ \\} 等語法
     - 徹底避免生成數百個 OMML 物件導致 Word 複製貼上單核 100% 卡死！
     """
     s = text.strip()
@@ -360,7 +387,21 @@ def add_simple_math_run(paragraph, text: str, default_font="標楷體", ascii_fo
     s = s.replace(r'\angle', '∠').replace(r'\triangle', '△')
     s = s.replace(r'\in', '∈')
     s = s.replace(r'\pi', 'π').replace(r'\alpha', 'α').replace(r'\beta', 'β').replace(r'\theta', 'θ').replace(r'\lambda', 'λ')
-    
+
+    # 箭頭與推導符號
+    s = s.replace(r'\Rightarrow', '⇒').replace(r'\rightarrow', '→').replace(r'\to', '→')
+    s = s.replace(r'\Leftarrow', '⇐').replace(r'\leftarrow', '←')
+    s = s.replace(r'\Leftrightarrow', '⇔').replace(r'\leftrightarrow', '↔')
+
+    # 省略號
+    s = s.replace(r'\dots', '…').replace(r'\cdots', '…').replace(r'\ldots', '…')
+
+    # 集合花括號
+    s = s.replace(r'\{', '{').replace(r'\}', '}')
+
+    # 數學負號與減號：全面將 ASCII 連字號 - 轉為國際標準數學負號 − (U+2212)
+    s = s.replace('-', '−')
+
     parts = re.split(r'([a-zA-Z]+)', s)
     for part in parts:
         if not part:
@@ -404,11 +445,29 @@ def optimize_math_markdown(text: str, enable_optimization: bool = True) -> tuple
         s = re.sub(r'\\text\{([^}]*)\}', r'\1', s)
         s = re.sub(r'\\rm\{([^}]*)\}', r'\1', s)
         s = s.replace(r'\degree', '°').replace(r'^\circ', '°')
+        s = s.replace(r'\times', '×').replace(r'\div', '÷')
+        s = s.replace(r'\pm', '±').replace(r'\mp', '∓')
+        s = s.replace(r'\le', '≤').replace(r'\ge', '≥')
+        s = s.replace(r'\neq', '≠').replace(r'\ne', '≠')
+        s = s.replace(r'\approx', '≈').replace(r'\equiv', '≡')
+        s = s.replace(r'\cdot', '·')
+        s = s.replace(r'\perp', '⊥').replace(r'\parallel', '∥')
+        s = s.replace(r'\sim', '∼').replace(r'\cong', '≅')
+        s = s.replace(r'\angle', '∠').replace(r'\triangle', '△')
+        s = s.replace(r'\in', '∈')
+        s = s.replace(r'\pi', 'π').replace(r'\alpha', 'α').replace(r'\beta', 'β').replace(r'\theta', 'θ').replace(r'\lambda', 'λ')
+        s = s.replace(r'\Rightarrow', '⇒').replace(r'\rightarrow', '→').replace(r'\to', '→')
+        s = s.replace(r'\Leftarrow', '⇐').replace(r'\leftarrow', '←')
+        s = s.replace(r'\Leftrightarrow', '⇔').replace(r'\leftrightarrow', '↔')
+        s = s.replace(r'\dots', '…').replace(r'\cdots', '…').replace(r'\ldots', '…')
+        s = s.replace(r'\{', '{').replace(r'\}', '}')
+        s = s.replace('-', '−')
         simplified_count += 1
         return s
 
     processed_text = re.sub(r'(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)', inline_replacer, text)
     return processed_text, simplified_count, preserved_count
+
 
 def add_item_to_paragraph(paragraph, item, default_font="標楷體", ascii_font="Times New Roman", default_size=13, force_color=None):
     """

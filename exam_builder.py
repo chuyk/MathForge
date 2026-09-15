@@ -12,9 +12,9 @@ from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
 # 匯入 OMML 核心模組
 try:
-    from _tools.omml_helper import add_exam_runs, set_run_font, sanitize_text, configure_document_normal_style
+    from _tools.omml_helper import add_exam_runs, set_run_font, sanitize_text, configure_document_normal_style, ensure_document_font_consistency
 except ImportError:
-    from omml_helper import add_exam_runs, set_run_font, sanitize_text, configure_document_normal_style
+    from omml_helper import add_exam_runs, set_run_font, sanitize_text, configure_document_normal_style, ensure_document_font_consistency
 
 # 規範色彩常數
 COLOR_BLACK = RGBColor(0, 0, 0)
@@ -251,6 +251,7 @@ def build_student_exam(questions_data, title, subtitle, out_path):
             p_img.paragraph_format.space_after = Pt(4)
             add_exam_image(p_img, q["sol_image_path"], q.get("sol_svg_path"), width_inch=q.get("sol_img_width_inch", 3.2))
 
+    ensure_document_font_consistency(doc, size_pt=13)
     doc.save(out_path)
     return out_path
 
@@ -309,5 +310,6 @@ def build_teacher_exam(questions_data, title, subtitle, out_path):
             r_div = p_div.add_run("―" * 58)
             set_run_font(r_div, font_name="標楷體", size_pt=10, color_rgb=COLOR_GRAY)
 
+    ensure_document_font_consistency(doc, size_pt=13)
     doc.save(out_path)
     return out_path
