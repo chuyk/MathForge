@@ -151,17 +151,17 @@ with st.sidebar:
     
     st.markdown("#### 🤖 AI 模型選擇")
     model_options = [
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
         "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
     ]
     model_choice = st.selectbox(
         "選擇推理模型",
         options=model_options,
         index=0,
-        help="Google 官方最新前瞻推理模型，預設推薦使用速度與推理兼備的 gemini-3.8-flash。"
+        help="Google 官方最新前瞻推理模型，預設首選極速輕量之 gemini-3.5-flash-lite；若遇額度已滿或繁忙，系統將依序向後遞補 (3.5 -> 3.6 -> 3.7 -> 3.8)。"
     )
     
     st.divider()
@@ -576,10 +576,11 @@ if uploaded_file is not None:
             progress_bar.progress(20)
             
             valid_models = []
+            ordered_candidates = [model_choice] + [x for x in model_options if x != model_choice]
             try:
                 from google import genai
                 test_client = genai.Client(api_key=api_key, http_options={"timeout": 8000})
-                for m in [model_choice] + [x for x in reversed(model_options) if x != model_choice]:
+                for m in ordered_candidates:
                     try:
                         test_client.models.get(model=m)
                         valid_models.append(m)
@@ -589,12 +590,12 @@ if uploaded_file is not None:
                 pass
                 
             if valid_models:
-                candidate_models = [model_choice] + [m for m in reversed(valid_models) if m != model_choice]
-                status_text.success(f"【2/4】🌐 ✅ 已連線至 Google！成功探測到可用模型：`{candidate_models[0]}`，即刻展開改題...")
+                candidate_models = [model_choice] + [m for m in valid_models if m != model_choice]
+                status_text.success(f"【2/4】🌐 ✅ 已連線至 Google！首選執行模型：`{candidate_models[0]}`，即刻展開改題...")
                 time.sleep(1)
             else:
-                candidate_models = [model_choice] + [m for m in reversed(model_options) if m != model_choice]
-                status_text.info(f"【2/4】🌐 已向 Google 伺服器送出請求，即刻展開數學命題...")
+                candidate_models = ordered_candidates
+                status_text.info(f"【2/4】🌐 已向 Google 伺服器送出請求，首選模型：`{candidate_models[0]}`...")
                 time.sleep(0.8)
 
             exam_data = None
