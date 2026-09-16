@@ -297,6 +297,17 @@ def is_answer_sheet_only(text: str) -> bool:
         
     return False
 
+def element_has_image(elem) -> bool:
+    """檢查 XML 元素是否包含圖片物件（完全相容所有命名空間，杜絕 lxml XPathEvalError）"""
+    try:
+        for el in elem.iter():
+            tag = el.tag.split('}')[-1] if '}' in el.tag else el.tag
+            if tag in ('drawing', 'shape', 'blip', 'imagedata', 'pict'):
+                return True
+    except Exception:
+        pass
+    return False
+
 # 輔助函式：提取上傳檔案純文字（支援 DOCX / DOC / PDF 智慧雙欄與去雜訊）
 def extract_file_content(file_obj):
     filename = file_obj.name.lower()
@@ -313,9 +324,8 @@ def extract_file_content(file_obj):
                 p = docx.text.paragraph.Paragraph(child, doc)
                 txt = p.text.strip()
                 if txt:
-                    # 檢查段落是否包含圖片物件
-                    has_img = bool(child.xpath('.//w:drawing | .//v:shape | .//a:blip'))
-                    if has_img:
+                    # 安全檢查段落是否包含圖片物件
+                    if element_has_image(child):
                         txt += " [本題附圖]"
                     full_text.append(txt)
             elif tag == 'tbl':
@@ -339,8 +349,7 @@ def extract_file_content(file_obj):
                             for cp in cell.paragraphs:
                                 c_txt = cp.text.strip()
                                 if c_txt:
-                                    has_img = bool(cp._element.xpath('.//w:drawing | .//v:shape | .//a:blip'))
-                                    if has_img:
+                                    if element_has_image(cp._element):
                                         c_txt += " [本題附圖]"
                                     full_text.append(c_txt)
                 else:
