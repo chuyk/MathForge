@@ -610,22 +610,34 @@ if uploaded_file is not None:
                 error_msg = ""
                 raw_text = ""
                 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(call_single_model_attempt, api_key, curr_model, SYSTEM_PROMPT, user_prompt, MAX_ATTEMPT_SECONDS)
-                    
-                    while True:
-                        elapsed = int(time.time() - start_t)
-                        if elapsed >= MAX_ATTEMPT_SECONDS:
-                            error_msg = f"模型 {curr_model} 回應逾時（超過 {MAX_ATTEMPT_SECONDS} 秒）"
-                            break
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(call_single_model_attempt, api_key, curr_model, SYSTEM_PROMPT, user_prompt, MAX_ATTEMPT_SECONDS)
+                
+                while True:
+                    elapsed = int(time.time() - start_t)
+                    if elapsed >= MAX_ATTEMPT_SECONDS:
+                        error_msg = f"模型 {curr_model} 回應逾時（超過 {MAX_ATTEMPT_SECONDS} 秒）"
                         try:
-                            raw_text = future.result(timeout=0.6)
-                            break
-                        except concurrent.futures.TimeoutError:
-                            status_text.info(f"【2/4】🤖 正由「{curr_model}」深入演算全卷試題與詳解...（已耗時 {elapsed} 秒 / 上限 {MAX_ATTEMPT_SECONDS} 秒，大考題目深度生成中，請耐心稍候）")
-                        except Exception as req_err:
-                            error_msg = str(req_err)
-                            break
+                            executor.shutdown(wait=False, cancel_futures=True)
+                        except Exception:
+                            pass
+                        break
+                    try:
+                        raw_text = future.result(timeout=0.6)
+                        try:
+                            executor.shutdown(wait=False)
+                        except Exception:
+                            pass
+                        break
+                    except concurrent.futures.TimeoutError:
+                        status_text.info(f"【2/4】🤖 正由「{curr_model}」深入演算全卷試題與詳解...（已耗時 {elapsed} 秒 / 上限 {MAX_ATTEMPT_SECONDS} 秒，大考題目深度生成中，請耐心稍候）")
+                    except Exception as req_err:
+                        error_msg = str(req_err)
+                        try:
+                            executor.shutdown(wait=False)
+                        except Exception:
+                            pass
+                        break
                 
                 if error_msg:
                     is_429 = ("429" in error_msg) or ("quota" in error_msg.lower()) or ("rate" in error_msg.lower())
