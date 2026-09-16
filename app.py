@@ -151,18 +151,17 @@ with st.sidebar:
     
     st.markdown("#### 🤖 AI 模型選擇")
     model_options = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-2.5-pro",
-        "gemini-1.5-pro",
         "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
     ]
     model_choice = st.selectbox(
         "選擇推理模型",
         options=model_options,
         index=0,
-        help="推薦優先使用 Google 官方正式版高速推理模型 gemini-2.5-flash 或 gemini-2.0-flash，速度極快（約 5~15 秒完成）、穩定度最高。"
+        help="Google 官方最新前瞻推理模型，預設推薦使用速度與推理兼備的 gemini-3.8-flash。"
     )
     
     st.divider()
@@ -487,8 +486,8 @@ def extract_file_content(file_obj):
             
     return ""
 
-# 單次調用 AI 模型輔助函式（嚴格加入連線與讀取逾時，杜絕任何無限卡死）
-def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str, user_prompt: str, timeout_sec: int = 90) -> str:
+# 單次調用 AI 模型輔助函式（嚴格加入連線與讀取逾時 180 秒，杜絕任何無限卡死）
+def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str, user_prompt: str, timeout_sec: int = 180) -> str:
     full_prompt = system_prompt + "\n\n" + user_prompt
     err_list = []
     
@@ -572,7 +571,7 @@ if uploaded_file is not None:
                          "👉 請確認並重新上傳包含完整題目文字與題幹的試卷檔案（若原題附帶解答亦可，但不可僅傳答案表）。")
                 st.stop()
 
-            # 2. 測試 API 連線並探測可用模型
+            # 2. 測試 API 連線並探測可用模型（倒序輪替）
             status_text.info(f"【2/4】🌐 正在與 Google 伺服器握手連線，探測可用模型...")
             progress_bar.progress(20)
             
@@ -580,7 +579,7 @@ if uploaded_file is not None:
             try:
                 from google import genai
                 test_client = genai.Client(api_key=api_key, http_options={"timeout": 8000})
-                for m in [model_choice] + [x for x in model_options if x != model_choice]:
+                for m in [model_choice] + [x for x in reversed(model_options) if x != model_choice]:
                     try:
                         test_client.models.get(model=m)
                         valid_models.append(m)
@@ -590,11 +589,11 @@ if uploaded_file is not None:
                 pass
                 
             if valid_models:
-                candidate_models = valid_models + [m for m in model_options if m not in valid_models]
+                candidate_models = [model_choice] + [m for m in reversed(valid_models) if m != model_choice]
                 status_text.success(f"【2/4】🌐 ✅ 已連線至 Google！成功探測到可用模型：`{candidate_models[0]}`，即刻展開改題...")
                 time.sleep(1)
             else:
-                candidate_models = [model_choice] + [m for m in model_options if m != model_choice]
+                candidate_models = [model_choice] + [m for m in reversed(model_options) if m != model_choice]
                 status_text.info(f"【2/4】🌐 已向 Google 伺服器送出請求，即刻展開數學命題...")
                 time.sleep(0.8)
 
@@ -603,7 +602,7 @@ if uploaded_file is not None:
             
             user_prompt = f"""請針對以下原始考卷內容進行「全卷改題」，嚴格依據系統規範產出純 JSON 格式：\n\n{exam_raw_text}"""
             
-            MAX_ATTEMPT_SECONDS = 90  # 單個模型最大容許等待 90 秒，嚴禁無限卡死
+            MAX_ATTEMPT_SECONDS = 180  # 單個模型最大容許等待 180 秒（3分鐘），逾時自動倒序切換
             
             for m_idx, curr_model in enumerate(candidate_models):
                 progress_bar.progress(20 + int(30 * (m_idx / len(candidate_models))))
@@ -623,7 +622,7 @@ if uploaded_file is not None:
                             raw_text = future.result(timeout=0.6)
                             break
                         except concurrent.futures.TimeoutError:
-                            status_text.info(f"【2/4】🤖 正由「{curr_model}」深入演算全卷試題與詳解...（已耗時 {elapsed} 秒，大考題目深度生成中，請耐心稍候）")
+                            status_text.info(f"【2/4】🤖 正由「{curr_model}」深入演算全卷試題與詳解...（已耗時 {elapsed} 秒 / 上限 {MAX_ATTEMPT_SECONDS} 秒，大考題目深度生成中，請耐心稍候）")
                         except Exception as req_err:
                             error_msg = str(req_err)
                             break
