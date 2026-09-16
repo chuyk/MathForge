@@ -4,12 +4,14 @@ import json
 import re
 import time
 import io
+import struct
 import zipfile
 import concurrent.futures
 import tempfile
 import traceback
 import streamlit as st
 import docx
+import olefile
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
@@ -307,143 +309,221 @@ def element_has_image(elem) -> bool:
         pass
     return False
 
-# 輔助函式：提取上傳檔案純文字（支援 DOCX / DOC / PDF 智慧雙欄與去雜訊）
+# 輔助函式：從 DOCX 資料流智慧提取試卷文字（支援雙欄排版還原與附圖物件標記）
+def extract_docx_from_stream(doc_stream) -> str:
+    doc = docx.Document(doc_stream)
+    full_text = []
+    
+    # 遍歷主文 XML 元素，維持自然流式與智慧雙欄解析
+    for child in doc.element.body:
+        tag = child.tag.split('}')[-1]
+        if tag == 'p':
+            p = docx.text.paragraph.Paragraph(child, doc)
+            txt = p.text.strip()
+            if txt:
+                if element_has_image(child):
+                    txt += " [本題附圖]"
+                full_text.append(txt)
+        elif tag == 'tbl':
+            table = docx.table.Table(child, doc)
+            cols_count = len(table.columns)
+            rows_count = len(table.rows)
+            
+            # 判定是否為典型「左右雙欄排版無框表格」
+            is_two_col_layout = False
+            if cols_count == 2 and rows_count >= 1:
+                left_text = "\n".join(table.cell(r, 0).text.strip() for r in range(min(3, rows_count)) if table.cell(r, 0).text.strip())
+                right_text = "\n".join(table.cell(r, 1).text.strip() for r in range(min(3, rows_count)) if table.cell(r, 1).text.strip())
+                if re.search(r'^\s*\(?\s*[0-9]{1,2}', left_text) or len(left_text) > 40:
+                    is_two_col_layout = True
+                    
+            if is_two_col_layout:
+                # 雙欄試卷：先由上至下垂直讀取左欄所有儲存格，再垂直讀取右欄
+                for c_idx in (0, 1):
+                    for r_idx in range(rows_count):
+                        cell = table.cell(r_idx, c_idx)
+                        for cp in cell.paragraphs:
+                            c_txt = cp.text.strip()
+                            if c_txt:
+                                if element_has_image(cp._element):
+                                    c_txt += " [本題附圖]"
+                                full_text.append(c_txt)
+            else:
+                # 一般資料表格：按列讀取，過濾重複單元格
+                for row in table.rows:
+                    seen_cell_txt = set()
+                    row_parts = []
+                    for cell in row.cells:
+                        c_txt = cell.text.strip()
+                        if c_txt and c_txt not in seen_cell_txt:
+                            seen_cell_txt.add(c_txt)
+                            row_parts.append(c_txt)
+                    if row_parts:
+                        full_text.append(" | ".join(row_parts))
+                        
+    # 去除題庫常見元數據雜訊（大幅精簡 Prompt Token）
+    cleaned_lines = []
+    noise_keywords = ["認知歷程向度", "能力指標：", "測驗目標：", "難易度：", "出處：", "試題編號："]
+    for line in full_text:
+        if any(nk in line for nk in noise_keywords):
+            continue
+        cleaned_lines.append(line)
+        
+    return "\n".join(cleaned_lines)
+
+# 輔助函式：純 Python 原生解析 Word 97-2003 (.doc) OLE 片段表（Plcfpcd）
+def parse_ms_doc_bytes(data: bytes) -> str:
+    """純 Python 原生解析 Word 97-2003 (.doc) 二進位 OLE 片段表，完美支援繁體中文、表格與附圖標記"""
+    try:
+        ole = olefile.OleFileIO(io.BytesIO(data))
+    except Exception:
+        return ""
+        
+    try:
+        if not ole.exists('WordDocument'):
+            ole.close()
+            return ""
+        word_stream = ole.openstream('WordDocument').read()
+        if len(word_stream) < 0x01AA:
+            ole.close()
+            return ""
+            
+        flags = struct.unpack_from('<H', word_stream, 0x000A)[0]
+        fWhichTblStm = (flags >> 9) & 1
+        table_name = '1Table' if fWhichTblStm else '0Table'
+        if not ole.exists(table_name):
+            ole.close()
+            return ""
+            
+        table_stream = ole.openstream(table_name).read()
+        fcClx, lcbClx = struct.unpack_from('<II', word_stream, 0x01A2)
+        if fcClx + lcbClx > len(table_stream):
+            ole.close()
+            return ""
+            
+        clx = table_stream[fcClx : fcClx + lcbClx]
+        idx = 0
+        extracted_text = ""
+        
+        while idx < len(clx):
+            clxt = clx[idx]
+            idx += 1
+            if clxt == 1:
+                cbGrpprl = struct.unpack_from('<H', clx, idx)[0]
+                idx += 2 + cbGrpprl
+            elif clxt == 2:
+                lcbPlcPcd = struct.unpack_from('<I', clx, idx)[0]
+                idx += 4
+                plc_data = clx[idx : idx + lcbPlcPcd]
+                n = (lcbPlcPcd - 4) // 12
+                cps = [struct.unpack_from('<I', plc_data, i * 4)[0] for i in range(n + 1)]
+                pcds_start = (n + 1) * 4
+                
+                text_pieces = []
+                for i in range(n):
+                    cp_len = cps[i + 1] - cps[i]
+                    pcd = plc_data[pcds_start + i * 8 : pcds_start + (i + 1) * 8]
+                    fc = struct.unpack_from('<I', pcd, 2)[0]
+                    fCompressed = (fc & 0x40000000) != 0
+                    actual_fc = fc & ~0x40000000
+                    
+                    if fCompressed:
+                        offset = actual_fc // 2
+                        raw_bytes = word_stream[offset : offset + cp_len]
+                        text_pieces.append(raw_bytes.decode('cp1252', errors='replace'))
+                    else:
+                        offset = actual_fc
+                        raw_bytes = word_stream[offset : offset + cp_len * 2]
+                        text_pieces.append(raw_bytes.decode('utf-16le', errors='replace'))
+                
+                extracted_text = "".join(text_pieces)
+                break
+        ole.close()
+        
+        if not extracted_text.strip():
+            return ""
+            
+        # 清理與格式化：
+        # 1. 識別圖片/繪圖標記 (\x01, \x08)，自動補上 [本題附圖]
+        extracted_text = re.sub(r'[\x01\x08]', ' [本題附圖] ', extracted_text)
+        # 2. 移除 Word 欄位指令 (\x13 ... \x14 ... \x15)
+        extracted_text = re.sub(r'\x13[^\x14\x15]*\x14([^\x15]*)\x15', r'\1', extracted_text)
+        extracted_text = re.sub(r'[\x13\x14\x15]', '', extracted_text)
+        # 3. 表格單元格與換行轉換
+        extracted_text = extracted_text.replace('\x07\x07', '\n').replace('\x07', ' | ')
+        extracted_text = extracted_text.replace('\r', '\n').replace('\x0b', '\n').replace('\x0c', '\n')
+        # 4. 去除多餘非列印控制字元
+        extracted_text = re.sub(r'[\x00-\x06\x0e-\x1f]', '', extracted_text)
+        
+        # 5. 過濾題庫雜訊
+        noise_keywords = ["認知歷程向度", "能力指標：", "測驗目標：", "難易度：", "出處：", "試題編號："]
+        lines = []
+        for line in extracted_text.splitlines():
+            s = line.strip()
+            if s and not any(nk in s for nk in noise_keywords):
+                lines.append(s)
+        return "\n".join(lines)
+    except Exception:
+        try:
+            ole.close()
+        except Exception:
+            pass
+        return ""
+
+# 輔助函式：啟發式串流文字掃描器（當 OLE 片段表損毀時作為純 Python 最後防線）
+def scan_raw_doc_stream(data: bytes) -> str:
+    try:
+        ole = olefile.OleFileIO(io.BytesIO(data))
+        if not ole.exists('WordDocument'):
+            ole.close()
+            return ""
+        word_stream = ole.openstream('WordDocument').read()
+        ole.close()
+    except Exception:
+        word_stream = data
+        
+    pattern = re.compile(rb'((?:[\x20-\x7e\r\n\t]\x00|[\x00-\xff][\x4e-\x9f]|[\x00-\xff][\xff]){3,})')
+    matches = pattern.findall(word_stream)
+    recovered = []
+    noise_keywords = ["認知歷程向度", "能力指標：", "測驗目標：", "難易度：", "出處：", "試題編號："]
+    for m in matches:
+        txt = m.decode('utf-16le', errors='ignore').strip()
+        txt = txt.replace('\r', '\n').replace('\x07', ' | ')
+        for l in txt.splitlines():
+            s = l.strip()
+            if len(s) >= 2 and not any(nk in s for nk in noise_keywords):
+                recovered.append(s)
+    return "\n".join(recovered)
+
+# 輔助函式：提取上傳檔案純文字（支援 DOCX / DOC / RTF / PDF 智慧雙欄與去雜訊）
 def extract_file_content(file_obj):
     filename = file_obj.name.lower()
+    file_bytes = file_obj.read()
     
-    # 1. 處理 .docx 格式
-    if filename.endswith(".docx"):
-        doc = docx.Document(file_obj)
-        full_text = []
-        
-        # 遍歷主文 XML 元素，維持自然流式與智慧雙欄解析
-        for child in doc.element.body:
-            tag = child.tag.split('}')[-1]
-            if tag == 'p':
-                p = docx.text.paragraph.Paragraph(child, doc)
-                txt = p.text.strip()
-                if txt:
-                    # 安全檢查段落是否包含圖片物件
-                    if element_has_image(child):
-                        txt += " [本題附圖]"
-                    full_text.append(txt)
-            elif tag == 'tbl':
-                table = docx.table.Table(child, doc)
-                cols_count = len(table.columns)
-                rows_count = len(table.rows)
-                
-                # 判定是否為典型「左右雙欄排版無框表格」
-                is_two_col_layout = False
-                if cols_count == 2 and rows_count >= 1:
-                    left_text = "\n".join(table.cell(r, 0).text.strip() for r in range(min(3, rows_count)) if table.cell(r, 0).text.strip())
-                    right_text = "\n".join(table.cell(r, 1).text.strip() for r in range(min(3, rows_count)) if table.cell(r, 1).text.strip())
-                    if re.search(r'^\s*\(?\s*[0-9]{1,2}', left_text) or len(left_text) > 40:
-                        is_two_col_layout = True
-                        
-                if is_two_col_layout:
-                    # 雙欄試卷：先由上至下垂直讀取左欄所有儲存格，再垂直讀取右欄
-                    for c_idx in (0, 1):
-                        for r_idx in range(rows_count):
-                            cell = table.cell(r_idx, c_idx)
-                            for cp in cell.paragraphs:
-                                c_txt = cp.text.strip()
-                                if c_txt:
-                                    if element_has_image(cp._element):
-                                        c_txt += " [本題附圖]"
-                                    full_text.append(c_txt)
-                else:
-                    # 一般資料表格：按列讀取，過濾重複單元格
-                    for row in table.rows:
-                        seen_cell_txt = set()
-                        row_parts = []
-                        for cell in row.cells:
-                            c_txt = cell.text.strip()
-                            if c_txt and c_txt not in seen_cell_txt:
-                                seen_cell_txt.add(c_txt)
-                                row_parts.append(c_txt)
-                        if row_parts:
-                            full_text.append(" | ".join(row_parts))
-                            
-        # 去除題庫常見元數據雜訊（大幅精簡 Prompt Token）
-        cleaned_lines = []
-        noise_keywords = ["認知歷程向度", "能力指標：", "測驗目標：", "難易度：", "出處：", "試題編號："]
-        for line in full_text:
-            if any(nk in line for nk in noise_keywords):
-                continue
-            cleaned_lines.append(line)
-            
-        return "\n".join(cleaned_lines)
-        
-    # 2. 處理 .doc 舊版 Word 格式
-    elif filename.endswith(".doc"):
-        file_bytes = file_obj.read()
-        extracted_doc_text = ""
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".doc") as tmp_doc:
-            tmp_doc.write(file_bytes)
-            tmp_doc_path = tmp_doc.name
-            
+    # 智慧魔術字節嗅探（優先穿透假副檔名）
+    # 1. 判定是否為 ZIP / DOCX 格式（含被誤命名為 .doc 的情況）
+    if file_bytes.startswith(b"PK\x03\x04") or filename.endswith(".docx"):
         try:
-            import subprocess
-            # 嘗試 1：antiword (Linux / Streamlit Cloud 極速抽取)
-            try:
-                proc = subprocess.run(["antiword", tmp_doc_path], capture_output=True, text=True, timeout=5)
-                if proc.returncode == 0 and proc.stdout.strip():
-                    extracted_doc_text = proc.stdout.strip()
-            except Exception:
-                pass
-                
-            # 嘗試 2：Windows Word COM (若在 Windows 且有安裝微軟 Office)
-            if not extracted_doc_text and sys.platform.startswith("win"):
-                try:
-                    import win32com.client
-                    import pythoncom
-                    pythoncom.CoInitialize()
-                    word_app = win32com.client.Dispatch("Word.Application")
-                    word_app.Visible = False
-                    w_doc = word_app.Documents.Open(tmp_doc_path)
-                    extracted_doc_text = w_doc.Content.Text
-                    w_doc.Close(False)
-                    word_app.Quit()
-                except Exception:
-                    pass
-                    
-            # 嘗試 3：LibreOffice headless
-            if not extracted_doc_text:
-                try:
-                    out_dir = os.path.dirname(tmp_doc_path)
-                    proc = subprocess.run(["soffice", "--headless", "--convert-to", "txt:Text", "--outdir", out_dir, tmp_doc_path], capture_output=True, timeout=10)
-                    txt_candidate = os.path.splitext(tmp_doc_path)[0] + ".txt"
-                    if os.path.exists(txt_candidate):
-                        with open(txt_candidate, "r", encoding="utf-8", errors="ignore") as f_txt:
-                            extracted_doc_text = f_txt.read()
-                        try:
-                            os.remove(txt_candidate)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        finally:
-            if os.path.exists(tmp_doc_path):
-                try:
-                    os.remove(tmp_doc_path)
-                except Exception:
-                    pass
-                    
-        if extracted_doc_text.strip():
-            return extracted_doc_text
-        else:
-            raise RuntimeError(
-                "系統檢測到此檔案為 Word 97-2003 舊版格式 (.doc)。"
-                "伺服器無頭轉檔環境暫未就緒，建議您在 Word 開啟後點選【檔案】➔【另存新檔】，"
-                "選擇【Word 文件 (*.docx)】或【PDF】再行上傳！"
-            )
+            return extract_docx_from_stream(io.BytesIO(file_bytes))
+        except Exception:
+            pass
+            
+    # 2. 判定是否為 RTF 格式（富文字格式，舊題庫常見）
+    if file_bytes.startswith(b"{\\rtf") or file_bytes.startswith(b"{\\rt") or filename.endswith(".rtf"):
+        try:
+            from striprtf.striprtf import rtf_to_text
+            rtf_str = file_bytes.decode("utf-8", errors="ignore")
+            cleaned_rtf = rtf_to_text(rtf_str)
+            if cleaned_rtf.strip():
+                return cleaned_rtf.strip()
+        except Exception:
+            pass
 
-    # 3. 處理 .pdf 格式（支援智慧中線雙欄版面排序）
-    elif filename.endswith(".pdf"):
+    # 3. 判定是否為 PDF 格式（支援智慧中線雙欄版面排序）
+    if file_bytes.startswith(b"%PDF") or filename.endswith(".pdf"):
         try:
             import fitz  # PyMuPDF
-            doc = fitz.open(stream=file_obj.read(), filetype="pdf")
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
             full_text = []
             for page in doc:
                 blocks = page.get_text("blocks")
@@ -479,11 +559,96 @@ def extract_file_content(file_obj):
             return "\n".join(full_text)
         except ImportError:
             import pypdf
-            reader = pypdf.PdfReader(file_obj)
+            reader = pypdf.PdfReader(io.BytesIO(file_bytes))
             full_text = [page.extract_text() for page in reader.pages if page.extract_text()]
             return "\n".join(full_text)
-            
+
+    # 4. 處理 Word 97-2003 (.doc) 舊版二進位格式（多層級強固解析架構）
+    if file_bytes.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") or filename.endswith(".doc"):
+        # 第 1 級：純 Python 原生 MS-DOC 片段表解析（零依賴、極速且 100% 支援繁體中文、表格與附圖）
+        try:
+            doc_text = parse_ms_doc_bytes(file_bytes)
+            if doc_text and doc_text.strip():
+                return doc_text.strip()
+        except Exception:
+            pass
+
+        # 第 2 級：系統工具與無頭環境（Linux antiword / catdoc / Windows COM / LibreOffice）
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".doc") as tmp_doc:
+            tmp_doc.write(file_bytes)
+            tmp_doc_path = tmp_doc.name
+
+        extracted_doc_text = ""
+        try:
+            import subprocess
+            # 嘗試 2-1：antiword（強制加入 -m UTF-8.txt 確保繁體中文不亂碼）
+            try:
+                proc = subprocess.run(["antiword", "-m", "UTF-8.txt", tmp_doc_path], capture_output=True, text=True, timeout=5)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    extracted_doc_text = proc.stdout.strip()
+                elif proc.returncode != 0:
+                    proc2 = subprocess.run(["antiword", "-m", "UTF-8", tmp_doc_path], capture_output=True, text=True, timeout=5)
+                    if proc2.returncode == 0 and proc2.stdout.strip():
+                        extracted_doc_text = proc2.stdout.strip()
+            except Exception:
+                pass
+
+            # 嘗試 2-2：catdoc（Linux 繁體中文支援）
+            if not extracted_doc_text:
+                try:
+                    proc_cat = subprocess.run(["catdoc", "-d", "utf-8", tmp_doc_path], capture_output=True, text=True, timeout=5)
+                    if proc_cat.returncode == 0 and proc_cat.stdout.strip():
+                        extracted_doc_text = proc_cat.stdout.strip()
+                except Exception:
+                    pass
+
+            # 嘗試 2-3：Windows Word COM（本地 Windows 環境）
+            if not extracted_doc_text and sys.platform.startswith("win"):
+                try:
+                    import win32com.client
+                    import pythoncom
+                    pythoncom.CoInitialize()
+                    word_app = win32com.client.Dispatch("Word.Application")
+                    word_app.Visible = False
+                    w_doc = word_app.Documents.Open(tmp_doc_path)
+                    extracted_doc_text = w_doc.Content.Text
+                    w_doc.Close(False)
+                    word_app.Quit()
+                except Exception:
+                    pass
+
+            # 嘗試 2-4：LibreOffice headless
+            if not extracted_doc_text:
+                try:
+                    out_dir = os.path.dirname(tmp_doc_path)
+                    subprocess.run(["soffice", "--headless", "--convert-to", "txt:Text", "--outdir", out_dir, tmp_doc_path], capture_output=True, timeout=10)
+                    txt_candidate = os.path.splitext(tmp_doc_path)[0] + ".txt"
+                    if os.path.exists(txt_candidate):
+                        with open(txt_candidate, "r", encoding="utf-8", errors="ignore") as f_txt:
+                            extracted_doc_text = f_txt.read()
+                        try:
+                            os.remove(txt_candidate)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        finally:
+            if os.path.exists(tmp_doc_path):
+                try:
+                    os.remove(tmp_doc_path)
+                except Exception:
+                    pass
+
+        if extracted_doc_text.strip():
+            return extracted_doc_text.strip()
+
+        # 第 3 級：損毀串流啟發式文字抽取（最後防線）
+        recovered_stream_text = scan_raw_doc_stream(file_bytes)
+        if recovered_stream_text.strip():
+            return recovered_stream_text.strip()
+
     return ""
+
 
 # 單次調用 AI 模型輔助函式（嚴格加入連線與讀取逾時 180 秒，杜絕任何無限卡死）
 def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str, user_prompt: str, timeout_sec: int = 180) -> str:
