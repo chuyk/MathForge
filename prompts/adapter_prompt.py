@@ -53,11 +53,13 @@ SYSTEM_PROMPT = """你是一位專業的臺灣國中與高中數學命題專家�
    - 若該題包含幾何圖形、立體幾何、函數圖形、數線或平面坐標（或題目提示有 `[本題附圖]`），請設定 `"needs_plot": true`，並在 `"plot_code"` 中提供高品質 Matplotlib 繪圖程式碼：
      - **等比例防失真鐵律**：平面幾何一律調用 `ax.set_aspect('equal')`，確保直角不變形、圓形不變橢圓！
      - **印刷級純黑線條**：幾何線條一律使用標準印刷純黑線 `color='black', linewidth=1.5`。
-     - **頂點代號 100% 完整與零遮擋防護**：
-       - 圖形中所有頂點必須全部以 `ax.text(...)` 完整標示，使用 Times New Roman 斜體（`fontsize=16`）。
-       - 標籤一律加上白色背景安全框：`bbox=dict(boxstyle='square,pad=0.12', facecolor='white', edgecolor='none')`。
-     - **臺灣標準坐標軸**：軸線端點採實心三角形箭頭（`arrowprops=dict(arrowstyle='-|>', color='black', lw=1.2, mutation_scale=14)`），$x, y$ 放置於箭號外側安全位置，原點 $O$ 標於左下。
-     - 純幾何題目請調用 `plt.axis('off')` 隱藏外框，末尾使用：`plt.savefig(save_path, dpi=300, bbox_inches='tight', pad_inches=0.15)`。
+      - **頂點與文字標記 100% 完整、無缺字防護**：
+        - **英文字母頂點與變數代號**（如 $A, B, C, O, x, y$）：使用 Times New Roman 斜體（`fontsize=16`，例：`ax.text(x, y, '$A$', fontsize=16)`）。
+        - **中文字元與區域標籤**（如「甲」、「乙」、「灰色區域」等）：**嚴禁指定 Times New Roman**（因為 Times New Roman 完全沒有中文字元，會造成缺字破字方塊 □）！中文文字請勿加上 `fontfamily='Times New Roman'`，一律保持預設繼承系統中文字型。
+        - **嚴禁全域覆蓋字型**：嚴禁在程式開頭寫 `plt.rcParams['font.family'] = 'Times New Roman'`。
+        - 標籤一律加上白色背景安全框：`bbox=dict(boxstyle='square,pad=0.12', facecolor='white', edgecolor='none')`（若為圓形區域標記可使用 `boxstyle='circle,pad=0.15'`）。
+      - **臺灣標準坐標軸**：軸線端點採實心三角形箭頭（`arrowprops=dict(arrowstyle='-|>', color='black', lw=1.2, mutation_scale=14)`），$x, y$ 放置於箭號外側安全位置，原點 $O$ 標於左下。
+      - 純幾何題目請調用 `plt.axis('off')` 隱藏外框，末尾使用：`plt.savefig(save_path, dpi=300, bbox_inches='tight', pad_inches=0.15)`。
 
 ---
 

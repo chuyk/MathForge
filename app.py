@@ -13,6 +13,7 @@ import streamlit as st
 import docx
 import olefile
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 from matplotlib.figure import Figure
 import numpy as np
 
@@ -23,6 +24,73 @@ if CURRENT_DIR not in sys.path:
 
 from exam_builder import build_student_exam, build_teacher_exam
 from prompts.adapter_prompt import SYSTEM_PROMPT
+
+def configure_matplotlib_fonts():
+    """動態探測系統中的繁體中文與 CJK 字型，鎖定 Matplotlib 中文字型，杜絕缺字破字方塊 (Tofu)"""
+    cjk_font_candidates = [
+        "Noto Sans TC",
+        "Noto Sans CJK TC",
+        "Microsoft JhengHei",
+        "DFKai-SB",
+        "PingFang TC",
+        "WenQuanYi Zen Hei",
+        "WenQuanYi Micro Hei",
+        "Noto Sans CJK SC",
+        "Noto Sans SC",
+        "SimHei",
+        "Arial Unicode MS",
+    ]
+    
+    # 在 Linux 雲端環境（如 Streamlit Cloud），檢查系統字型目錄並動態註冊
+    font_search_paths = [
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
+        os.path.expanduser("~/.fonts"),
+        os.path.expanduser("~/.local/share/fonts")
+    ]
+    for d in font_search_paths:
+        if os.path.exists(d):
+            for root, _, files in os.walk(d):
+                for file in files:
+                    if file.lower().endswith(('.ttf', '.ttc', '.otf')):
+                        low = file.lower()
+                        if any(k in low for k in ['noto', 'cjk', 'wqy', 'zenhei', 'tc', 'sc', 'kai', 'hei', 'ming']):
+                            try:
+                                fp = os.path.join(root, file)
+                                fm.fontManager.addfont(fp)
+                            except Exception:
+                                pass
+
+    available = {f.name for f in fm.fontManager.ttflist}
+    valid = [name for name in cjk_font_candidates if name in available]
+    
+    font_list = valid + ["Times New Roman", "DejaVu Sans", "sans-serif"]
+    plt.rcParams['font.sans-serif'] = font_list
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['axes.unicode_minus'] = False
+
+def sanitize_plot_code(code: str) -> str:
+    """清理繪圖代碼：防止全域覆蓋英文字型，並防止中文字元被指定為 Times New Roman 導致破字"""
+    cleaned_lines = []
+    for line in code.splitlines():
+        if re.search(r"plt\.rcParams\s*\[\s*['\"]font\.(?:family|serif|sans-serif)['\"]\s*\]", line) or \
+           re.search(r"plt\.rc\s*\(\s*['\"]font['\"]\s*,\s*family\s*=", line):
+            continue
+        cleaned_lines.append(line)
+    code = "\n".join(cleaned_lines)
+    
+    def remove_tnr_on_chinese(match):
+        full_call = match.group(0)
+        if re.search(r'[\u4e00-\u9fff]', full_call):
+            full_call = re.sub(r",\s*(?:fontfamily|fontname)\s*=\s*['\"][^'\"]*['\"]", "", full_call)
+            full_call = re.sub(r"(?:fontfamily|fontname)\s*=\s*['\"][^'\"]*['\"]\s*,\s*", "", full_call)
+        return full_call
+        
+    code = re.sub(r'(?:ax|plt)\.text\s*\([^)]*\)', remove_tnr_on_chinese, code)
+    return code
+
+# 啟動時即刻鎖定中文字型
+configure_matplotlib_fonts()
 
 # =======================================================
 # 頁面配置與現代化極致視覺
@@ -983,11 +1051,13 @@ if uploaded_file is not None:
                             print(f"SVG generation warning for Q{q['num']}: {svg_err}")
                         return res
                         
+                    configure_matplotlib_fonts()
+                    sanitized_plot_code = sanitize_plot_code(q["plot_code"])
                     local_scope = {"save_path": img_path, "plt": plt, "np": np}
                     try:
                         Figure.savefig = custom_fig_savefig
                         plt.savefig = lambda fname, *args, **kwargs: custom_fig_savefig(plt.gcf(), fname, *args, **kwargs)
-                        exec(q["plot_code"], {}, local_scope)
+                        exec(sanitized_plot_code, {}, local_scope)
                         # 防護：若代碼忘記調用 savefig，但目前有開啟之圖表
                         if plt.get_fignums():
                             if not os.path.exists(img_path):
