@@ -534,6 +534,112 @@ def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str,
         raise RuntimeError(" | ".join(err_list))
     return ""
 
+# 穩健 JSON 解析與修復引擎（解決 LLM 回傳 LaTeX 反斜線、未轉義換行與多餘逗號導致 JSON 解析崩潰的經典問題）
+def robust_json_decode(raw_text: str):
+    if not raw_text or not raw_text.strip():
+        return None, "模型回傳內容為空"
+    
+    text = raw_text.strip()
+    
+    # 1. 嘗試從 Markdown code block 提取
+    m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+    if m:
+        candidate = m.group(1).strip()
+    else:
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            candidate = text[start:end+1]
+        else:
+            candidate = text
+
+    # 第 1 階段：直接嘗試解析（strict=False 允許合法的控制字元）
+    try:
+        return json.loads(candidate, strict=False), None
+    except Exception as e1:
+        last_err = str(e1)
+
+    # 第 2 階段：智慧修復 LaTeX 單反斜線與字串內未轉義換行
+    def repair_escapes(s):
+        result = []
+        in_string = False
+        i = 0
+        n = len(s)
+        math_words = re.compile(
+            r'^(frac|bar|beta|binom|bullet|times|triangle|theta|text|tau|'
+            r'neq|nabla|neg|perp|pm|pi|parallel|degree|div|delta|dots|'
+            r'cdot|cong|cos|left|right|le|leq|ge|geq|quad|qquad|circ|'
+            r'cup|cap|subset|in|notin|partial|infty|int|sqrt|sim|sum|'
+            r'overline|overleftrightarrow|overrightarrow|angle|alpha|approx)'
+        )
+        
+        while i < n:
+            c = s[i]
+            if not in_string:
+                if c == '"':
+                    in_string = True
+                result.append(c)
+                i += 1
+            else:
+                if c == '"':
+                    in_string = False
+                    result.append(c)
+                    i += 1
+                elif c == '\\':
+                    if i + 1 < n:
+                        nxt = s[i + 1]
+                        rest = s[i+1:i+20]
+                        if math_words.match(rest):
+                            result.append('\\\\')
+                            i += 1
+                        elif nxt == '"':
+                            result.append('\\"')
+                            i += 2
+                        elif nxt == '\\':
+                            result.append('\\\\')
+                            i += 2
+                        elif nxt in ['/', 'b', 'f', 'n', 'r', 't']:
+                            result.append('\\' + nxt)
+                            i += 2
+                        elif nxt == 'u' and i + 5 < n and re.match(r'^[0-9a-fA-F]{4}', s[i+2:i+6]):
+                            result.append(s[i:i+6])
+                            i += 6
+                        else:
+                            result.append('\\\\')
+                            i += 1
+                    else:
+                        result.append('\\\\')
+                        i += 1
+                elif c == '\n':
+                    result.append('\\n')
+                    i += 1
+                elif c == '\r':
+                    result.append('\\r')
+                    i += 1
+                elif c == '\t':
+                    result.append('\\t')
+                    i += 1
+                else:
+                    result.append(c)
+                    i += 1
+        return "".join(result)
+
+    repaired = candidate
+    try:
+        repaired = repair_escapes(candidate)
+        return json.loads(repaired, strict=False), None
+    except Exception as e2:
+        last_err = str(e2)
+
+    # 第 3 階段：移除結尾多餘逗號 (Trailing Commas)
+    try:
+        repaired2 = re.sub(r',\s*([\]}])', r'\1', repaired)
+        return json.loads(repaired2, strict=False), None
+    except Exception as e3:
+        last_err = str(e3)
+
+    return None, f"JSON 解碼錯誤：{last_err}"
+
 # =======================================================
 # 執行改題流程
 # =======================================================
@@ -650,10 +756,8 @@ if uploaded_file is not None:
                     continue
                     
                 if raw_text:
-                    try:
-                        clean_json = re.sub(r'^```json\s*', '', raw_text.strip())
-                        clean_json = re.sub(r'\s*```$', '', clean_json)
-                        parsed = json.loads(clean_json)
+                    parsed, parse_err = robust_json_decode(raw_text)
+                    if parsed:
                         if parsed.get("error") == "ONLY_ANSWER_SHEET":
                             progress_bar.empty()
                             status_text.empty()
@@ -667,9 +771,12 @@ if uploaded_file is not None:
                             time.sleep(1)
                             break
                         else:
-                            st.warning(f"⚠️ 模型 **{curr_model}** 回傳題目為空，嘗試下一個模型...")
-                    except Exception:
-                        st.warning(f"⚠️ 模型 **{curr_model}** 回傳格式需校正，嘗試下一個模型...")
+                            st.warning(f"⚠️ 模型 **{curr_model}** 回傳題目欄位為空，嘗試下一個模型...")
+                    else:
+                        st.warning(f"⚠️ 模型 **{curr_model}** 回傳格式需校正（{parse_err}），正自動切換至下一個模型...")
+                        with st.expander(f"🔍 檢視「{curr_model}」回傳之原始文字與錯誤細節", expanded=False):
+                            st.caption(f"**詳細錯誤**：{parse_err}")
+                            st.code(raw_text[:3000], language="json")
                         time.sleep(1)
                         
             if not exam_data:

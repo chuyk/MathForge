@@ -62,7 +62,12 @@ SYSTEM_PROMPT = """你是一位專業的臺灣國中與高中數學命題專家�
 ---
 
 ### 輸出格式：
-你必須且僅能輸出符合以下 JSON Schema 的純 JSON 內容，嚴禁在 JSON 前後加入任何額外說明文字或 markdown 非 JSON 字元：
+你必須且僅能輸出符合以下 JSON Schema 的純 JSON 內容，嚴禁在 JSON 前後加入任何額外說明文字或 markdown 非 JSON 字元。
+
+【JSON 語法絕對鐵律（防止解析失敗）】：
+1. **反斜線雙重轉義**：在 JSON 字串中，所有 LaTeX 反斜線必須寫為雙反斜線 `\\`（例如 `\\frac{a}{b}`、`\\overline{AB}`、`\\sqrt{2}`、`\\triangle ABC`、`\\angle ABC`、`\\perp`）。嚴禁使用未轉義的單反斜線，否則將導致 JSON 語法無效！
+2. **嚴禁尾隨逗號 (Trailing Commas)**：陣列 `[]` 或物件 `{}` 的最後一個元素後方，嚴禁留下多餘逗號 `,`。
+3. **字串換行規範**：若 `plot_code` 包含多行程式碼，換行請一律以 `\n` 表示，字串內嚴禁直接按 Enter 產生未轉義的實體換行字元。
 
 ```json
 {
