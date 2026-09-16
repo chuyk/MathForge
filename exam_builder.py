@@ -165,6 +165,65 @@ def render_options(doc, options, options_type="text"):
         else:
             add_runs_paragraph(doc, [str(options)], space_before=1, space_after=3, left_indent=0.35)
 
+def render_answer_table(doc, questions_data):
+    """
+    大考標準簡答速查表（支援分組智慧排版）：
+    - 支援選擇題 (A)、填充題數值/算式、計算題見解析
+    - 題數超過 10 題時自動按每組 10 題分拆表格，防表格擠出 B4 邊界
+    """
+    if not questions_data:
+        return
+        
+    chunk_size = 10
+    total = len(questions_data)
+    
+    for i in range(0, total, chunk_size):
+        chunk = questions_data[i:i + chunk_size]
+        cols_count = len(chunk) + 1
+        table = doc.add_table(rows=2, cols=cols_count)
+        table.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        headers = ["題號"] + [str(q.get("num", idx + 1)) for idx, q in enumerate(chunk, start=i)]
+        
+        ans_list = []
+        for q in chunk:
+            q_type = q.get("type", "choice")
+            raw_ans = str(q.get("ans", "")).strip()
+            if q_type == "choice":
+                if raw_ans in ("A", "B", "C", "D"):
+                    ans_list.append(f"({raw_ans})")
+                elif not raw_ans.startswith("(") and len(raw_ans) == 1:
+                    ans_list.append(f"({raw_ans})")
+                else:
+                    ans_list.append(raw_ans)
+            elif q_type == "calc":
+                if len(raw_ans) > 8:
+                    ans_list.append("見解析")
+                else:
+                    ans_list.append(raw_ans if raw_ans else "見解析")
+            else:
+                # 填充題
+                ans_list.append(raw_ans if raw_ans else "―")
+                
+        ans_row = ["答案"] + ans_list
+        
+        for col_idx, text in enumerate(headers):
+            cell = table.cell(0, col_idx)
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(text)
+            set_run_font(run, font_name="標楷體", ascii_font="Times New Roman", size_pt=11.5, bold=True, color_rgb=COLOR_NAVY)
+            
+        for col_idx, text in enumerate(ans_row):
+            cell = table.cell(1, col_idx)
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            add_exam_runs(p, [text], default_font="標楷體", ascii_font="Times New Roman", default_size=12, force_color=COLOR_RED)
+            
+        p_gap = doc.add_paragraph()
+        p_gap.paragraph_format.space_before = Pt(2)
+        p_gap.paragraph_format.space_after = Pt(4)
+
 def build_student_exam(questions_data, title, subtitle, out_path):
     """產出檔案 1：全卷試題與後附詳解(B4_13pt版).docx"""
     doc = Document()
@@ -187,6 +246,7 @@ def build_student_exam(questions_data, title, subtitle, out_path):
 
     # 全部試題
     for q in questions_data:
+        q_type = q.get("type", "choice")
         add_runs_paragraph(doc, [q["stem"]], space_before=2, space_after=3, keep_with_next=True)
         
         # 題目附圖 (下一行純流式呈現)
@@ -198,7 +258,14 @@ def build_student_exam(questions_data, title, subtitle, out_path):
             p_img.paragraph_format.keep_with_next = True
             add_exam_image(p_img, q["image_path"], q.get("svg_path"), width_inch=q.get("img_width_inch", 3.2))
 
-        render_options(doc, q["options"], q.get("options_type", "text"))
+        # 選擇題輸出選項；填充題與計算題不渲染選項
+        if q_type == "choice" and q.get("options"):
+            render_options(doc, q["options"], q.get("options_type", "text"))
+        elif q_type == "calc":
+            # 計算題為學生預留手寫作答空間
+            p_calc_space = doc.add_paragraph()
+            p_calc_space.paragraph_format.space_before = Pt(4)
+            p_calc_space.paragraph_format.space_after = Pt(36)
 
     # 分頁後放置簡答與詳解
     doc.add_page_break()
@@ -209,28 +276,11 @@ def build_student_exam(questions_data, title, subtitle, out_path):
     r_sol_title = p_sol_title.add_run(f"{title} 參考解答與詳細解析")
     set_run_font(r_sol_title, font_name="標楷體", ascii_font="Times New Roman", size_pt=16, bold=True, color_rgb=COLOR_RED)
 
-    # 簡答速查表
-    table = doc.add_table(rows=2, cols=len(questions_data) + 1)
-    table.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    headers = ["題號"] + [str(q["num"]) for q in questions_data]
-    ans_row = ["答案"] + [f"({q['ans']})" if not q['ans'].startswith('(') else q['ans'] for q in questions_data]
-    
-    for col_idx, text in enumerate(headers):
-        cell = table.cell(0, col_idx)
-        p = cell.paragraphs[0]
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run(text)
-        set_run_font(run, font_name="標楷體", ascii_font="Times New Roman", size_pt=11.5, bold=True, color_rgb=COLOR_NAVY)
-        
-    for col_idx, text in enumerate(ans_row):
-        cell = table.cell(1, col_idx)
-        p = cell.paragraphs[0]
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run(text)
-        set_run_font(run, font_name="標楷體", ascii_font="Times New Roman", size_pt=12, bold=True, color_rgb=COLOR_RED)
+    # 簡答速查表（支援分組與多題型）
+    render_answer_table(doc, questions_data)
 
     p_space = doc.add_paragraph()
-    p_space.paragraph_format.space_after = Pt(10)
+    p_space.paragraph_format.space_after = Pt(6)
 
     # 各題詳細解析 (全紅色)
     for q in questions_data:
@@ -241,7 +291,7 @@ def build_student_exam(questions_data, title, subtitle, out_path):
         set_run_font(r_q, font_name="標楷體", ascii_font="Times New Roman", size_pt=13, bold=True, color_rgb=COLOR_RED)
         
         # 答案與解析步驟
-        for exp_line in q["explanation"]:
+        for exp_line in q.get("explanation", []):
             add_runs_paragraph(doc, [exp_line], space_before=1, space_after=2, left_indent=0.2, force_color=COLOR_RED)
 
         if q.get("sol_image_path") and os.path.exists(q["sol_image_path"]):
@@ -275,6 +325,7 @@ def build_teacher_exam(questions_data, title, subtitle, out_path):
     set_run_font(r_sub, font_name="標楷體", ascii_font="Times New Roman", size_pt=12, color_rgb=COLOR_SUBTITLE)
 
     for idx, q in enumerate(questions_data):
+        q_type = q.get("type", "choice")
         # 題幹 (黑字)
         add_runs_paragraph(doc, [q["stem"]], space_before=2, space_after=3, keep_with_next=True)
 
@@ -287,11 +338,12 @@ def build_teacher_exam(questions_data, title, subtitle, out_path):
             p_img.paragraph_format.keep_with_next = True
             add_exam_image(p_img, q["image_path"], q.get("svg_path"), width_inch=q.get("img_width_inch", 3.2))
 
-        # 選項 (黑字)
-        render_options(doc, q["options"], q.get("options_type", "text"))
+        # 選項 (黑字，僅選擇題且有 options 時輸出)
+        if q_type == "choice" and q.get("options"):
+            render_options(doc, q["options"], q.get("options_type", "text"))
 
         # 詳解 (全深紅字)
-        for exp_line in q["explanation"]:
+        for exp_line in q.get("explanation", []):
             add_runs_paragraph(doc, [exp_line], space_before=1, space_after=2, left_indent=0.2, force_color=COLOR_RED)
 
         # 詳解附圖

@@ -93,39 +93,28 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =======================================================
-# 憑證與設定本地持久化存取
+# =======================================================
+# 安全憑證機制：伺服器端嚴禁持久化儲存 API 金鑰
+# 若發現本機殘留檔案立即自動銷毀，金鑰僅留存於使用者前端瀏覽器
 # =======================================================
 SETTINGS_FILE = os.path.join(CURRENT_DIR, ".user_settings.json")
-
-def load_local_settings():
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-def save_local_settings(code, key):
+if os.path.exists(SETTINGS_FILE):
     try:
-        data = {"activation_code": code, "api_key": key}
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+        os.remove(SETTINGS_FILE)
     except Exception:
         pass
 
 # =======================================================
 # 側邊欄：啟動碼、API 金鑰與模型選擇
 # =======================================================
-saved_cfg = load_local_settings()
-init_code = saved_cfg.get("activation_code", "")
-init_key = saved_cfg.get("api_key", os.environ.get("GEMINI_API_KEY", ""))
+init_code = ""
+init_key = os.environ.get("GEMINI_API_KEY", "")
 
 with st.sidebar:
     st.image("https://img.icons8.com/isometric/100/compass--v1.png", width=70)
     st.markdown("### ⚙️ 核心設定 (Settings)")
     
-    # 啟動碼驗證欄位（支援持久化暫存）
+    # 啟動碼驗證欄位（由使用者前端瀏覽器記憶）
     activation_code = st.text_input(
         "🔐 系統啟動碼 (Activation Code)",
         type="password",
@@ -142,17 +131,13 @@ with st.sidebar:
 
     st.divider()
 
-    # API 金鑰欄位（支援持久化暫存）
+    # API 金鑰欄位（純前端 BYOK 模式）
     api_key = st.text_input(
         "🔑 Gemini API Key",
         type="password",
         value=init_key,
-        help="使用者自備金鑰（BYOK），金鑰自動暫存於本機/瀏覽器，不用每次重複輸入。"
+        help="使用者自備金鑰（BYOK），金鑰僅留存於當前瀏覽器工作階段，伺服器絕不留存任何記錄。"
     )
-    
-    # 自動保存至本地快取
-    if activation_code or api_key:
-        save_local_settings(activation_code, api_key)
     
     st.markdown("""
     <small>
@@ -203,50 +188,45 @@ with st.sidebar:
     st.caption("🔢 **方程式引擎**：Word 原生 OMML 可點選編輯公式")
     st.caption("⚡ **效能防護**：智慧算式脫殼分流（Word 全選複製極速不卡死）")
 
-# 雙向同步至瀏覽器 localStorage（無 iframe 原生執行）
-sync_js = f"""
+# 純前端瀏覽器 localStorage 記憶同步（保護敏感資訊，不經由 HTML 範本注入）
+sync_js = """
 <script>
-(function() {{
+(function() {
     const STORAGE_KEY_CODE = "mathforge_activation_code";
     const STORAGE_KEY_API = "mathforge_gemini_api_key";
     
-    const pyCode = "{activation_code}";
-    const pyKey = "{api_key}";
-    if (pyCode) localStorage.setItem(STORAGE_KEY_CODE, pyCode);
-    if (pyKey) localStorage.setItem(STORAGE_KEY_API, pyKey);
-    
-    function syncLocalStorage() {{
+    function syncLocalStorage() {
         const inputs = document.querySelectorAll('input[type="password"]');
-        if (inputs.length >= 2) {{
+        if (inputs.length >= 2) {
             const codeInput = inputs[0];
             const keyInput = inputs[1];
             
-            codeInput.addEventListener("input", (e) => {{
+            codeInput.addEventListener("input", (e) => {
                 localStorage.setItem(STORAGE_KEY_CODE, e.target.value);
-            }});
-            keyInput.addEventListener("input", (e) => {{
+            });
+            keyInput.addEventListener("input", (e) => {
                 localStorage.setItem(STORAGE_KEY_API, e.target.value);
-            }});
+            });
             
             const localCode = localStorage.getItem(STORAGE_KEY_CODE);
             const localKey = localStorage.getItem(STORAGE_KEY_API);
             const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
             
-            if (localCode && !codeInput.value) {{
+            if (localCode && !codeInput.value) {
                 setter.call(codeInput, localCode);
-                codeInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                codeInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            }}
-            if (localKey && !keyInput.value) {{
+                codeInput.dispatchEvent(new Event('input', { bubbles: true }));
+                codeInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            if (localKey && !keyInput.value) {
                 setter.call(keyInput, localKey);
-                keyInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                keyInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            }}
-        }}
-    }}
+                keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+                keyInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+    }
     setTimeout(syncLocalStorage, 300);
     setTimeout(syncLocalStorage, 800);
-}})();
+})();
 </script>
 """
 st.html(sync_js, unsafe_allow_javascript=True)
@@ -267,9 +247,9 @@ col_upload, col_info = st.columns([1.6, 1])
 
 with col_upload:
     uploaded_file = st.file_uploader(
-        "📂 上傳原始試卷 (.docx 或 .pdf)",
-        type=["docx", "pdf"],
-        help="支援標準 Word 考卷或 PDF 掃描檔/排版檔"
+        "📂 上傳原始試卷 (.docx / .doc 或 .pdf)",
+        type=["docx", "doc", "pdf"],
+        help="支援標準 Word 考卷（.docx / .doc）或 PDF 掃描檔/排版檔"
     )
 
 with col_info:
@@ -287,40 +267,214 @@ with col_info:
     <div class="feature-card" style="border-left: 4px solid #2563eb; background: #f8fafc;">
         <h4 style="margin: 0 0 0.5rem 0; color: #1e3a8a;">💡 老師改題必讀小秘訣</h4>
         <ul style="margin: 0; padding-left: 1.2rem; font-size: 0.90rem; color: #334155; line-height: 1.5;">
-            <li><b>🎯 單次改題以不超過 20 題最佳！若超過 20 題建議分兩次上傳，AI 輸出最完整、不中斷且速度最快。</li>
+            <li><b>🎯 支援多題型混合改題</b>：單選題、填充題、計算題均可同時處理與專屬排版！</li>
+            <li><b>⚡ 單次改題建議 10~15 題最佳</b>：分次改題生成最完整、最極速且詳解推導最細緻。</li>
             <li><b>🌟 上傳「詳解卷/解答卷」效果最佳</b>：原卷若附帶答案或解法，AI 能 100% 洞悉測驗重點，改寫出的生活素養情境最貼切、推導零失誤！</li>
         </ul>
     </div>
     """, unsafe_allow_html=True)
 
-# 輔助函式：提取上傳檔案純文字
+# 輔助函式：檢測文字是否僅為答案卷（缺乏題目題幹）
+def is_answer_sheet_only(text: str) -> bool:
+    cleaned = text.strip()
+    if len(cleaned) < 50:
+        return True
+    lines = [l.strip() for l in cleaned.splitlines() if l.strip()]
+    if not lines:
+        return True
+        
+    stem_keywords = ["請問", "計算", "下列何者", "何者正確", "何者錯誤", "如圖", "求", "則", "若", "面積", "長度", "方程式", "函數", "坐標", "幾何", "選出", "題"]
+    has_keywords = any(kw in cleaned for kw in stem_keywords)
+    
+    # 計算平均每行字數
+    avg_line_len = sum(len(l) for l in lines) / max(len(lines), 1)
+    
+    # 尋找密集答案代碼
+    ans_matches = re.findall(r'(\b[A-D]\b|\([A-D]\)|【[A-D]】)', cleaned)
+    # 若每行字數極短且密集出現答案代號，且缺乏關鍵題幹詞彙
+    if len(ans_matches) >= 5 and avg_line_len < 18 and not has_keywords:
+        return True
+        
+    return False
+
+# 輔助函式：提取上傳檔案純文字（支援 DOCX / DOC / PDF 智慧雙欄與去雜訊）
 def extract_file_content(file_obj):
     filename = file_obj.name.lower()
+    
+    # 1. 處理 .docx 格式
     if filename.endswith(".docx"):
         doc = docx.Document(file_obj)
         full_text = []
-        for p in doc.paragraphs:
-            if p.text.strip():
-                full_text.append(p.text)
-        for table in doc.tables:
-            for row in table.rows:
-                row_txt = " | ".join(c.text.strip() for c in row.cells if c.text.strip())
-                if row_txt:
-                    full_text.append(row_txt)
-        return "\n".join(full_text)
+        
+        # 遍歷主文 XML 元素，維持自然流式與智慧雙欄解析
+        for child in doc.element.body:
+            tag = child.tag.split('}')[-1]
+            if tag == 'p':
+                p = docx.text.paragraph.Paragraph(child, doc)
+                txt = p.text.strip()
+                if txt:
+                    # 檢查段落是否包含圖片物件
+                    has_img = bool(child.xpath('.//w:drawing | .//v:shape | .//a:blip'))
+                    if has_img:
+                        txt += " [本題附圖]"
+                    full_text.append(txt)
+            elif tag == 'tbl':
+                table = docx.table.Table(child, doc)
+                cols_count = len(table.columns)
+                rows_count = len(table.rows)
+                
+                # 判定是否為典型「左右雙欄排版無框表格」
+                is_two_col_layout = False
+                if cols_count == 2 and rows_count >= 1:
+                    left_text = "\n".join(table.cell(r, 0).text.strip() for r in range(min(3, rows_count)) if table.cell(r, 0).text.strip())
+                    right_text = "\n".join(table.cell(r, 1).text.strip() for r in range(min(3, rows_count)) if table.cell(r, 1).text.strip())
+                    if re.search(r'^\s*\(?\s*[0-9]{1,2}', left_text) or len(left_text) > 40:
+                        is_two_col_layout = True
+                        
+                if is_two_col_layout:
+                    # 雙欄試卷：先由上至下垂直讀取左欄所有儲存格，再垂直讀取右欄
+                    for c_idx in (0, 1):
+                        for r_idx in range(rows_count):
+                            cell = table.cell(r_idx, c_idx)
+                            for cp in cell.paragraphs:
+                                c_txt = cp.text.strip()
+                                if c_txt:
+                                    has_img = bool(cp._element.xpath('.//w:drawing | .//v:shape | .//a:blip'))
+                                    if has_img:
+                                        c_txt += " [本題附圖]"
+                                    full_text.append(c_txt)
+                else:
+                    # 一般資料表格：按列讀取，過濾重複單元格
+                    for row in table.rows:
+                        seen_cell_txt = set()
+                        row_parts = []
+                        for cell in row.cells:
+                            c_txt = cell.text.strip()
+                            if c_txt and c_txt not in seen_cell_txt:
+                                seen_cell_txt.add(c_txt)
+                                row_parts.append(c_txt)
+                        if row_parts:
+                            full_text.append(" | ".join(row_parts))
+                            
+        # 去除題庫常見元數據雜訊（大幅精簡 Prompt Token）
+        cleaned_lines = []
+        noise_keywords = ["認知歷程向度", "能力指標：", "測驗目標：", "難易度：", "出處：", "試題編號："]
+        for line in full_text:
+            if any(nk in line for nk in noise_keywords):
+                continue
+            cleaned_lines.append(line)
+            
+        return "\n".join(cleaned_lines)
+        
+    # 2. 處理 .doc 舊版 Word 格式
+    elif filename.endswith(".doc"):
+        file_bytes = file_obj.read()
+        extracted_doc_text = ""
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".doc") as tmp_doc:
+            tmp_doc.write(file_bytes)
+            tmp_doc_path = tmp_doc.name
+            
+        try:
+            import subprocess
+            # 嘗試 1：antiword (Linux / Streamlit Cloud 極速抽取)
+            try:
+                proc = subprocess.run(["antiword", tmp_doc_path], capture_output=True, text=True, timeout=5)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    extracted_doc_text = proc.stdout.strip()
+            except Exception:
+                pass
+                
+            # 嘗試 2：Windows Word COM (若在 Windows 且有安裝微軟 Office)
+            if not extracted_doc_text and sys.platform.startswith("win"):
+                try:
+                    import win32com.client
+                    import pythoncom
+                    pythoncom.CoInitialize()
+                    word_app = win32com.client.Dispatch("Word.Application")
+                    word_app.Visible = False
+                    w_doc = word_app.Documents.Open(tmp_doc_path)
+                    extracted_doc_text = w_doc.Content.Text
+                    w_doc.Close(False)
+                    word_app.Quit()
+                except Exception:
+                    pass
+                    
+            # 嘗試 3：LibreOffice headless
+            if not extracted_doc_text:
+                try:
+                    out_dir = os.path.dirname(tmp_doc_path)
+                    proc = subprocess.run(["soffice", "--headless", "--convert-to", "txt:Text", "--outdir", out_dir, tmp_doc_path], capture_output=True, timeout=10)
+                    txt_candidate = os.path.splitext(tmp_doc_path)[0] + ".txt"
+                    if os.path.exists(txt_candidate):
+                        with open(txt_candidate, "r", encoding="utf-8", errors="ignore") as f_txt:
+                            extracted_doc_text = f_txt.read()
+                        try:
+                            os.remove(txt_candidate)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        finally:
+            if os.path.exists(tmp_doc_path):
+                try:
+                    os.remove(tmp_doc_path)
+                except Exception:
+                    pass
+                    
+        if extracted_doc_text.strip():
+            return extracted_doc_text
+        else:
+            raise RuntimeError(
+                "系統檢測到此檔案為 Word 97-2003 舊版格式 (.doc)。"
+                "伺服器無頭轉檔環境暫未就緒，建議您在 Word 開啟後點選【檔案】➔【另存新檔】，"
+                "選擇【Word 文件 (*.docx)】或【PDF】再行上傳！"
+            )
+
+    # 3. 處理 .pdf 格式（支援智慧中線雙欄版面排序）
     elif filename.endswith(".pdf"):
         try:
             import fitz  # PyMuPDF
             doc = fitz.open(stream=file_obj.read(), filetype="pdf")
             full_text = []
             for page in doc:
-                full_text.append(page.get_text())
+                blocks = page.get_text("blocks")
+                text_blocks = [b for b in blocks if len(b) >= 5 and b[4].strip() and (len(b) < 7 or b[6] == 0)]
+                page_w = page.rect.width
+                page_h = page.rect.height
+                mid_x = page_w / 2.0
+                
+                # 檢查是否為左右雙欄版面
+                left_blocks = [b for b in text_blocks if b[2] <= mid_x + 25]
+                right_blocks = [b for b in text_blocks if b[0] >= mid_x - 25]
+                cross_blocks = [b for b in text_blocks if b[0] < mid_x - 25 and b[2] > mid_x + 25]
+                
+                if len(left_blocks) >= 2 and len(right_blocks) >= 2:
+                    top_headers = sorted([b for b in cross_blocks if b[1] < page_h * 0.22], key=lambda b: b[1])
+                    bot_cross = sorted([b for b in cross_blocks if b[1] >= page_h * 0.22], key=lambda b: b[1])
+                    
+                    left_sorted = sorted(left_blocks, key=lambda b: (b[1], b[0]))
+                    right_sorted = sorted(right_blocks, key=lambda b: (b[1], b[0]))
+                    
+                    for b in top_headers:
+                        full_text.append(b[4].strip())
+                    for b in left_sorted:
+                        full_text.append(b[4].strip())
+                    for b in right_sorted:
+                        full_text.append(b[4].strip())
+                    for b in bot_cross:
+                        full_text.append(b[4].strip())
+                else:
+                    for b in sorted(text_blocks, key=lambda b: (b[1], b[0])):
+                        full_text.append(b[4].strip())
+                        
             return "\n".join(full_text)
         except ImportError:
             import pypdf
             reader = pypdf.PdfReader(file_obj)
             full_text = [page.extract_text() for page in reader.pages if page.extract_text()]
             return "\n".join(full_text)
+            
     return ""
 
 # 單次調用 AI 模型輔助函式
@@ -417,6 +571,14 @@ if uploaded_file is not None:
                 st.error("無法從上傳檔案中提取有效文字，請確認檔案格式是否正確。")
                 st.stop()
 
+            # 本地啟發式防呆檢查：是否誤傳純答案卷
+            if is_answer_sheet_only(exam_raw_text):
+                progress_bar.empty()
+                status_text.empty()
+                st.error("⚠️ **上傳檔案檢測警示**：系統檢測到此檔案疑似僅包含答案卡/簡答表，缺少題目題幹敘述！\n\n"
+                         "👉 請確認並重新上傳包含完整題目文字與題幹的試卷檔案（若原題附帶解答亦可，但不可僅傳答案表）。")
+                st.stop()
+
             # 2. 測試 API 連線並呼叫 Gemini 進行改題
             status_text.info(f"【2/4】🌐 正在與 Google 伺服器握手連線，驗證 API Key 與模型「{model_choice}」...")
             progress_bar.progress(20)
@@ -493,6 +655,11 @@ if uploaded_file is not None:
                         clean_json = re.sub(r'^```json\s*', '', raw_text.strip())
                         clean_json = re.sub(r'\s*```$', '', clean_json)
                         parsed = json.loads(clean_json)
+                        if parsed.get("error") == "ONLY_ANSWER_SHEET":
+                            progress_bar.empty()
+                            status_text.empty()
+                            st.error(f"⚠️ {parsed.get('message', '系統檢測到上傳內容僅為答案卷，無題目題幹！')}")
+                            st.stop()
                         if parsed.get("questions"):
                             exam_data = parsed
                             successful_model = curr_model
@@ -687,14 +854,17 @@ if "download_data" in st.session_state:
     # 預覽產生之試題
     st.markdown("### 🔍 改題成果即時預覽 (Preview)")
     for q in data_dict["questions"]:
-        with st.expander(f"題號 {q['num']}：{q['stem'][:40]}..."):
+        q_type = q.get("type", "choice")
+        type_badge = "【選擇題】" if q_type == "choice" else ("【填充題】" if q_type == "blank" else "【計算題】")
+        with st.expander(f"題號 {q['num']} {type_badge}：{q['stem'][:38]}..."):
             st.markdown(f"**題幹**：{q['stem']}")
-            st.markdown("**選項**：")
-            for opt in q["options"]:
-                st.markdown(f"- {opt}")
-            st.markdown(f"**答案**：`({q['ans']})`")
+            if q_type == "choice" and q.get("options"):
+                st.markdown("**選項**：")
+                for opt in q["options"]:
+                    st.markdown(f"- {opt}")
+            st.markdown(f"**答案**：`{q.get('ans', '')}`")
             st.markdown("**詳解**：")
-            for step in q["explanation"]:
+            for step in q.get("explanation", []):
                 st.markdown(f"> {step}")
             if q.get("image_path") and os.path.exists(q["image_path"]):
                 st.image(q["image_path"], caption=f"第 {q['num']} 題附圖", width=350)
