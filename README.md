@@ -66,7 +66,7 @@ git push -u origin main
 
 1. 開啟網頁，於左側核心設定輸入 **系統啟動碼**（`kai`）。
 2. 貼上 **Google Gemini API Key**（系統自動記住至本地/瀏覽器 localStorage，下次免再輸入）。
-3. 選擇 AI 模型（支援最新官方前瞻模型：預設首選 `gemini-3.5-flash-lite`，並依序支援 `gemini-3.5-flash`、`gemini-3.6-flash`、`gemini-3.7-flash`、`gemini-3.8-flash`）。
+3. 選擇 AI 模型（支援最新官方前瞻模型：預設首選 `gemini-3.5-flash`，並依序支援 `gemini-3.6-flash`、`gemini-3.7-flash`、`gemini-3.8-flash`）。
 4. 上傳原始試卷（支援 `.docx`、`.doc` 或 `.pdf`）。
 5. 點擊 **「🚀 開始智能改題與 B4 考卷排版」**。
 6. 系統將即時進行 API 握手確認，並全自動完成素養改題、精確繪圖、OMML 公式轉換與 JIS B4 排版，點擊按鈕即可下載雙版本 Word 檔案！

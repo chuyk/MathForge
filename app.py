@@ -151,7 +151,6 @@ with st.sidebar:
     
     st.markdown("#### 🤖 AI 模型選擇")
     model_options = [
-        "gemini-3.5-flash-lite",
         "gemini-3.5-flash",
         "gemini-3.6-flash",
         "gemini-3.7-flash",
@@ -161,7 +160,7 @@ with st.sidebar:
         "選擇推理模型",
         options=model_options,
         index=0,
-        help="Google 官方最新前瞻推理模型，預設首選極速輕量之 gemini-3.5-flash-lite；若遇額度已滿或繁忙，系統將依序向後遞補 (3.5 -> 3.6 -> 3.7 -> 3.8)。"
+        help="Google 官方最新前瞻推理模型，預設首選極速且輸出穩定的 gemini-3.5-flash；若遇額度已滿或繁忙，系統將自動依序向後遞補 (3.6 -> 3.7 -> 3.8)。"
     )
     
     st.divider()
