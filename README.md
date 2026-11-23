@@ -66,7 +66,7 @@ git push -u origin main
 
 1. 開啟網頁，於左側核心設定輸入 **系統啟動碼**（`kai`）。
 2. 貼上 **Google Gemini API Key**（系統自動記住至本地/瀏覽器 localStorage，下次免再輸入）。
-3. 選擇 AI 模型與思考推演深度（支援最新前瞻模型：`gemini-3.6-flash`、`gemini-3.8-flash`、`gemini-4-hydrogen`、`gemini-3.5-flash-lite`、`gemini-3.1-flash-lite`，並可彈性切換 low/medium/high 思考等級）。
+3. 選擇 AI 模型、思考推演深度與等待逾時上限（支援最新模型：`gemini-3.6-flash`、`gemini-3.8-flash`、`gemini-4-hydrogen`、`gemini-3.5-flash-lite`、`gemini-3.1-flash-lite`；提供 low/medium/high 思考等級以及 90秒/180秒/360秒 彈性逾時上限設定）。
 4. 上傳原始試卷（支援 `.docx`、`.doc` 或 `.pdf`）。
 5. 點擊 **「🚀 開始智能改題與 B4 考卷排版」**。
 6. 系統將即時進行 API 握手確認，並全自動完成素養改題、精確繪圖、OMML 公式轉換與 JIS B4 排版，點擊按鈕即可下載雙版本 Word 檔案！

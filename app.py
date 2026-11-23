@@ -245,6 +245,18 @@ with st.sidebar:
         help="控制具備思考架構模型（如 Gemini 4 Hydrogen、Gemini 3.8 / 3.6）的深度思考時間。\n• low（推薦）：大幅縮減等待時間，出題速度極快，避免大考卷生成超時。\n• medium：標準中度推理。\n• high：極限深度推論（注意：在 Gemini 4 上全卷生成可能耗時較長）。"
     )
     thinking_level = thinking_level_choice.split()[0]
+
+    timeout_choice = st.selectbox(
+        "⏱️ 單一模型等待上限 (Timeout)",
+        options=[
+            "180 秒 (標準段考 10~25 題 / 推薦預設)",
+            "90 秒 (少量試題 1~5 題 / 極速驗證)",
+            "360 秒 (大型全卷 25~40 題 / 深度演算)"
+        ],
+        index=0,
+        help="設定單個 AI 模型最大容許等待時間：\n• 90 秒：適合 1~5 題少量試題快速測試，遇壅塞快速跳轉。\n• 180 秒（推薦）：適合標準 10~25 題段考考卷，兼顧完整題目輸出與防卡死。\n• 360 秒：適合 25~40 題大型全卷或大量圖表題，給予充足時間輸出長篇 JSON，杜絕半途中斷。"
+    )
+    timeout_limit_sec = int(timeout_choice.split()[0])
     
     st.divider()
 
@@ -754,7 +766,11 @@ def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str,
         # 針對具備深度思考能力的模型（Gemini 4 Hydrogen 預設 HIGH、Gemini 3.8 / 3.6 預設 MEDIUM）
         # 設定 thinking_level（預設 low 提速），避免全卷考題生成因長思考而逾時
         if any(m in model_name for m in ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.6-flash"]):
-            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
+            # gemini-3.6-flash 支援更極速的 minimal 等級；gemini-3.8-flash 則嚴格要求 low（不支援 minimal）
+            effective_level = thinking_level
+            if "gemini-3.6-flash" in model_name and thinking_level == "low":
+                effective_level = "minimal"
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=effective_level)
 
         response = client.models.generate_content(
             model=model_name,
@@ -766,7 +782,13 @@ def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str,
     except Exception as e1:
         err_list.append(f"google.genai({model_name}): {e1}")
         
-    # 次要嘗試：相容 legacy google.generativeai
+    # 次要嘗試：僅在 google.genai 未安裝或非 3.x/4 模型時相容 legacy google.generativeai
+    # 對於 gemini-4 與 gemini-3 系列，舊版 SDK 不支援思考控制，不重複長時阻塞
+    if any(m in model_name for m in ["gemini-4", "gemini-3"]):
+        if err_list:
+            raise RuntimeError(" | ".join(err_list))
+        return ""
+
     try:
         import google.generativeai as legacy_genai
         legacy_genai.configure(api_key=api_key)
@@ -776,7 +798,7 @@ def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str,
         )
         response = legacy_model.generate_content(
             [{"role": "user", "parts": [full_prompt]}],
-            request_options={"timeout": timeout_sec}
+            request_options={"timeout": min(timeout_sec, 60)}
         )
         if response and response.text:
             return response.text.strip()
@@ -961,7 +983,7 @@ if uploaded_file is not None:
             
             user_prompt = f"""請針對以下原始考卷內容進行「全卷改題」，嚴格依據系統規範產出純 JSON 格式：\n\n{exam_raw_text}"""
             
-            MAX_ATTEMPT_SECONDS = 240 if thinking_level == "high" else 180  # 單個模型最大容許等待時間，逾時自動向後遞補
+            MAX_ATTEMPT_SECONDS = timeout_limit_sec  # 依使用者於側邊欄設定的逾時上限 (90秒 / 180秒 / 360秒) 嚴格把關
             
             for m_idx, curr_model in enumerate(candidate_models):
                 progress_bar.progress(20 + int(30 * (m_idx / len(candidate_models))))
