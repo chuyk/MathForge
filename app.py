@@ -221,16 +221,30 @@ with st.sidebar:
     
     st.markdown("#### 🤖 AI 模型選擇")
     model_options = [
-        "gemini-3.5-flash-lite",
         "gemini-3.6-flash",
         "gemini-3.8-flash",
+        "gemini-4-hydrogen",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
     ]
     model_choice = st.selectbox(
         "選擇推理模型",
         options=model_options,
         index=0,
-        help="Google 官方最新前瞻推理模型，預設首選極速且輸出穩定的 gemini-3.5-flash；若遇額度已滿或繁忙，系統將自動依序向後遞補 (3.6 -> 3.7 -> 3.8)。"
+        help="Google 官方最新前瞻推理模型，預設首選極速且輸出穩定的 gemini-3.6-flash；若遇額度已滿或繁忙，系統將自動依序向後遞補 (3.6 -> 3.8 -> 4-hydrogen -> 3.5-lite -> 3.1-lite)。"
     )
+
+    thinking_level_choice = st.selectbox(
+        "🧠 思考推演深度 (Thinking Level)",
+        options=[
+            "low (加速模式 / 推薦)",
+            "medium (平衡推演)",
+            "high (深度邏輯推理)"
+        ],
+        index=0,
+        help="控制具備思考架構模型（如 Gemini 4 Hydrogen、Gemini 3.8 / 3.6）的深度思考時間。\n• low（推薦）：大幅縮減等待時間，出題速度極快，避免大考卷生成超時。\n• medium：標準中度推理。\n• high：極限深度推論（注意：在 Gemini 4 上全卷生成可能耗時較長）。"
+    )
+    thinking_level = thinking_level_choice.split()[0]
     
     st.divider()
 
@@ -717,8 +731,8 @@ def extract_file_content(file_obj):
     return ""
 
 
-# 單次調用 AI 模型輔助函式（嚴格加入連線與讀取逾時 180 秒，杜絕任何無限卡死）
-def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str, user_prompt: str, timeout_sec: int = 180) -> str:
+# 單次調用 AI 模型輔助函式（嚴格加入連線與讀取逾時，杜絕任何無限卡死）
+def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str, user_prompt: str, timeout_sec: int = 180, thinking_level: str = "low") -> str:
     full_prompt = system_prompt + "\n\n" + user_prompt
     err_list = []
     
@@ -732,13 +746,20 @@ def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str,
             http_options=types.HttpOptions(timeout=int(timeout_sec * 1000))
         )
         
+        config_kwargs = {
+            "system_instruction": system_prompt,
+            "response_mime_type": "application/json"
+        }
+        
+        # 針對具備深度思考能力的模型（Gemini 4 Hydrogen 預設 HIGH、Gemini 3.8 / 3.6 預設 MEDIUM）
+        # 設定 thinking_level（預設 low 提速），避免全卷考題生成因長思考而逾時
+        if any(m in model_name for m in ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.6-flash"]):
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
+
         response = client.models.generate_content(
             model=model_name,
             contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json"
-            )
+            config=types.GenerateContentConfig(**config_kwargs)
         )
         if response and response.text:
             return response.text.strip()
@@ -940,7 +961,7 @@ if uploaded_file is not None:
             
             user_prompt = f"""請針對以下原始考卷內容進行「全卷改題」，嚴格依據系統規範產出純 JSON 格式：\n\n{exam_raw_text}"""
             
-            MAX_ATTEMPT_SECONDS = 180  # 單個模型最大容許等待 180 秒（3分鐘），逾時自動倒序切換
+            MAX_ATTEMPT_SECONDS = 240 if thinking_level == "high" else 180  # 單個模型最大容許等待時間，逾時自動向後遞補
             
             for m_idx, curr_model in enumerate(candidate_models):
                 progress_bar.progress(20 + int(30 * (m_idx / len(candidate_models))))
@@ -949,7 +970,7 @@ if uploaded_file is not None:
                 raw_text = ""
                 
                 executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                future = executor.submit(call_single_model_attempt, api_key, curr_model, SYSTEM_PROMPT, user_prompt, MAX_ATTEMPT_SECONDS)
+                future = executor.submit(call_single_model_attempt, api_key, curr_model, SYSTEM_PROMPT, user_prompt, MAX_ATTEMPT_SECONDS, thinking_level)
                 
                 while True:
                     elapsed = int(time.time() - start_t)
