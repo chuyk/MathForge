@@ -749,38 +749,45 @@ def call_single_model_attempt(api_key: str, model_name: str, system_prompt: str,
     err_list = []
     
     # 優先調用 Google 官方最新 SDK (from google import genai)
-    try:
-        from google import genai
-        from google.genai import types
-        
-        client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=int(timeout_sec * 1000))
-        )
-        
-        config_kwargs = {
-            "system_instruction": system_prompt,
-            "response_mime_type": "application/json"
-        }
-        
-        # 針對具備深度思考能力的模型（Gemini 4 Hydrogen 預設 HIGH、Gemini 3.8 / 3.6 預設 MEDIUM）
-        # 設定 thinking_level（預設 low 提速），避免全卷考題生成因長思考而逾時
-        if any(m in model_name for m in ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.6-flash"]):
-            # gemini-3.6-flash 支援更極速的 minimal 等級；gemini-3.8-flash 則嚴格要求 low（不支援 minimal）
-            effective_level = thinking_level
-            if "gemini-3.6-flash" in model_name and thinking_level == "low":
-                effective_level = "minimal"
-            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=effective_level)
+    for attempt in range(2):
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(timeout=int(timeout_sec * 1000))
+            )
+            
+            config_kwargs = {
+                "system_instruction": system_prompt,
+                "response_mime_type": "application/json"
+            }
+            
+            # 針對具備深度思考能力的模型（Gemini 4 Hydrogen 預設 HIGH、Gemini 3.8 / 3.6 預設 MEDIUM）
+            # 設定 thinking_level（預設 low 提速），避免全卷考題生成因長思考而逾時
+            if any(m in model_name for m in ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.6-flash"]):
+                # gemini-3.6-flash 支援更極速的 minimal 等級；gemini-3.8-flash 則嚴格要求 low（不支援 minimal）
+                effective_level = thinking_level
+                if "gemini-3.6-flash" in model_name and thinking_level == "low":
+                    effective_level = "minimal"
+                config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=effective_level)
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(**config_kwargs)
-        )
-        if response and response.text:
-            return response.text.strip()
-    except Exception as e1:
-        err_list.append(f"google.genai({model_name}): {e1}")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(**config_kwargs)
+            )
+            if response and response.text:
+                return response.text.strip()
+        except Exception as e1:
+            err_str = str(e1)
+            # 若為短暫 503 滿載，自動微退避等待 2.5 秒重試一次
+            if ("503" in err_str or "unavailable" in err_str.lower()) and attempt == 0:
+                time.sleep(2.5)
+                continue
+            err_list.append(f"google.genai({model_name}): {e1}")
+            break
         
     # 次要嘗試：僅在 google.genai 未安裝或非 3.x/4 模型時相容 legacy google.generativeai
     # 對於 gemini-4 與 gemini-3 系列，舊版 SDK 不支援思考控制，不重複長時阻塞
@@ -1022,12 +1029,15 @@ if uploaded_file is not None:
                 
                 if error_msg:
                     is_429 = ("429" in error_msg) or ("quota" in error_msg.lower()) or ("rate" in error_msg.lower())
+                    is_503 = ("503" in error_msg) or ("unavailable" in error_msg.lower()) or ("high traffic" in error_msg.lower())
                     next_name = candidate_models[m_idx + 1] if m_idx + 1 < len(candidate_models) else "無"
                     if is_429:
-                        st.warning(f"⚠️ 模型 **{curr_model}** 觸發 Google 免費額度上限 (429 Rate Limit)，正自動切換至 `{next_name}` 繼續嘗試！")
+                        st.warning(f"⚠️ 模型 **{curr_model}** 觸發 Google 每分鐘額度限制 (429 Rate Limit)，正自動切換至 `{next_name}` 繼續嘗試！")
+                    elif is_503:
+                        st.warning(f"⚠️ 模型 **{curr_model}** 遭遇 Google 伺服器尖峰滿載 (503 High Traffic / Overload)，正自動切換至 `{next_name}` 繼續...")
                     else:
                         st.warning(f"⚠️ 模型 **{curr_model}** 調用失敗（{error_msg[:120]}），自動切換至 `{next_name}` 繼續...")
-                    time.sleep(1)
+                    time.sleep(1.2)
                     continue
                     
                 if raw_text:
