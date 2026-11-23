@@ -242,7 +242,7 @@ with st.sidebar:
             "high (深度邏輯推理)"
         ],
         index=0,
-        help="控制具備思考架構模型（如 Gemini 4 Hydrogen、Gemini 3.8 / 3.6）的深度思考時間。\n• low（推薦）：大幅縮減等待時間，出題速度極快，避免大考卷生成超時。\n• medium：標準中度推理。\n• high：極限深度推論（注意：在 Gemini 4 上全卷生成可能耗時較長）。"
+        help="控制具備思考架構模型（如 Gemini 4 Hydrogen、Gemini 3.8 / 3.6）的深度思考時間。\n• low（推薦加速）：3.6-flash 會自動對應至最極速的 minimal 模式；3.8-flash 與 4-hydrogen 則對應至合法最低的 low 模式，杜絕超時。\n• medium：標準中度推理。\n• high：極限深度推論（注意：在 Gemini 4 上全卷生成可能耗時較長）。"
     )
     thinking_level = thinking_level_choice.split()[0]
 
